@@ -266,6 +266,7 @@ pub fn mm2_main(version: String, datetime: String) {
         return;
     }
 
+    log!("Hello 👋");
     log!("AtomicDEX API {} DT {}", version, datetime);
 
     if let Err(err) = run_lp_main(first_arg, &|_| (), version, datetime) {
