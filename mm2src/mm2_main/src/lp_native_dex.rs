@@ -142,6 +142,10 @@ pub enum P2PInitError {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     #[display(fmt = "WASM node can be a seed if only 'p2p_in_memory' is true")]
     WasmNodeCannotBeSeed,
+    #[display(fmt = "WASM node can be a metrics node")]
+    WasmNodeCannotBeMetrics,
+    #[display(fmt = "Error: cannot have both 'i_am_seed' and 'i_am_metric' in config")]
+    ErrorCannotBeSeedAndMetrics,
     #[display(fmt = "Internal error: '{}'", _0)]
     Internal(String),
 }
@@ -561,7 +565,12 @@ async fn kick_start(ctx: MmArc) -> MmInitResult<()> {
 
 pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let i_am_seed = ctx.conf["i_am_seed"].as_bool().unwrap_or(false);
+    let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
     let netid = ctx.netid();
+
+    if i_am_seed && i_am_metric {
+        return MmError::err(P2PInitError::ErrorCannotBeSeedAndMetrics);
+    }
 
     if DEPRECATED_NETID_LIST.contains(&netid) {
         return MmError::err(P2PInitError::InvalidNetId(NetIdError::Deprecated { netid }));
@@ -570,7 +579,7 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let seednodes = seednodes(&ctx)?;
 
     let ctx_on_poll = ctx.clone();
-    let force_p2p_key = if i_am_seed {
+    let force_p2p_key = if i_am_seed || i_am_metric {
         let crypto_ctx = CryptoCtx::from_ctx(&ctx).mm_err(|e| P2PInitError::Internal(e.to_string()))?;
         let key = sha256(crypto_ctx.mm2_internal_privkey_slice());
         Some(key.take())
@@ -580,6 +589,8 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
 
     let node_type = if i_am_seed {
         relay_node_type(&ctx).await?
+    } else if i_am_metric {
+        metrics_node_type(&ctx).await?
     } else {
         light_node_type(&ctx)?
     };
@@ -666,18 +677,7 @@ async fn relay_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
         return relay_in_memory_node_type(ctx);
     }
 
-    let netid = ctx.netid();
-    let ip = myipaddr(ctx.clone())
-        .await
-        .map_to_mm(P2PInitError::ErrorGettingMyIpAddr)?;
-    let network_ports = lp_network_ports(netid)?;
-    let wss_certs = wss_certs(ctx)?;
-    if wss_certs.is_none() {
-        const WARN_MSG: &str = r#"Please note TLS private key and certificate are not specified.
-To accept P2P WSS connections, please pass 'wss_certs' to the config.
-Example:    "wss_certs": { "server_priv_key": "/path/to/key.pem", "certificate": "/path/to/cert.pem" }"#;
-        warn!("{}", WARN_MSG);
-    }
+    let (_netid, ip, network_ports, wss_certs) = allow_external_rpc_access(ctx).await?;
 
     Ok(NodeType::Relay {
         ip,
@@ -703,6 +703,49 @@ fn light_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
     let netid = ctx.netid();
     let network_ports = lp_network_ports(netid)?;
     Ok(NodeType::Light { network_ports })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn metrics_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
+    if ctx.p2p_in_memory() {
+        unimplemented!()
+    }
+    MmError::err(P2PInitError::WasmNodeCannotBeMetrics)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn metrics_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
+    if ctx.p2p_in_memory() {
+        unimplemented!()
+    }
+
+    let (_netid, ip, network_ports, wss_certs) = allow_external_rpc_access(ctx).await?;
+
+    Ok(NodeType::Metrics {
+        ip,
+        network_ports,
+        wss_certs,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn allow_external_rpc_access(
+    ctx: &MmArc,
+) -> P2PResult<(u16, std::net::IpAddr, mm2_libp2p::NetworkPorts, Option<WssCerts>)> {
+    let netid = ctx.netid();
+    let ip = myipaddr(ctx.clone())
+        .await
+        .map_to_mm(P2PInitError::ErrorGettingMyIpAddr)?;
+    let network_ports = lp_network_ports(netid)?;
+    let wss_certs = wss_certs(ctx)?;
+    if wss_certs.is_none() {
+        const WARN_MSG: &str = r#"Please note TLS private key and certificate are not specified.
+To accept P2P WSS connections, please pass 'wss_certs' to the config.
+Example:    "wss_certs": { "server_priv_key": "/path/to/key.pem", "certificate": "/path/to/cert.pem" }"#;
+        warn!("{}", WARN_MSG);
+    }
+
+    Ok((netid, ip, network_ports, wss_certs))
 }
 
 /// Returns non-empty vector of keys/certs or an error.
