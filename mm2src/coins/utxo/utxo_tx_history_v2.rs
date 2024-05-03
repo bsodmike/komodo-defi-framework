@@ -175,7 +175,7 @@ where
         let current_balances = self.coin.my_addresses_balances().await?;
 
         // Create a copy of the CTX balances state.
-        // We must not to save any change of `ctx.balances` if an error occurs while processing `current_balances` collection.
+        // We must try not to save any change of `ctx.balances` if an error occurs while processing `current_balances` collection.
         let mut ctx_balances = self.balances.clone();
 
         let mut updated_addresses = HashSet::with_capacity(ctx_balances.len());
