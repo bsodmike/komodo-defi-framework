@@ -371,9 +371,9 @@ impl RunTakerSwapInput {
 }
 
 /// Starts the taker swap and drives it to completion (until None next command received).
-/// Panics in case of command or event apply fails, not sure yet how to handle such situations
-/// because it's usually means that swap is in invalid state which is possible only if there's developer error
-/// Every produced event is saved to local DB. Swap status is broadcast to P2P network after completion.
+/// Panics in case the command or event apply fails; not sure yet how to handle such situations as
+/// it usually means that the swap is in an invalid state, which is only possible due to developer error
+/// Every produced event is saved to the local DB. Swap status is broadcast to P2P network after completion.
 pub async fn run_taker_swap(swap: RunTakerSwapInput, ctx: MmArc) {
     let uuid = swap.uuid().to_owned();
     let mut attempts = 0;
