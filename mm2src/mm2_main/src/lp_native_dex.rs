@@ -144,8 +144,6 @@ pub enum P2PInitError {
     WasmNodeCannotBeSeed,
     #[display(fmt = "WASM node can be a metrics node")]
     WasmNodeCannotBeMetrics,
-    #[display(fmt = "Error: cannot have both 'i_am_seed' and 'i_am_metric' in config")]
-    ErrorCannotBeSeedAndMetrics,
     #[display(fmt = "Internal error: '{}'", _0)]
     Internal(String),
 }
@@ -568,10 +566,6 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
     let netid = ctx.netid();
 
-    if i_am_seed && i_am_metric {
-        return MmError::err(P2PInitError::ErrorCannotBeSeedAndMetrics);
-    }
-
     if DEPRECATED_NETID_LIST.contains(&netid) {
         return MmError::err(P2PInitError::InvalidNetId(NetIdError::Deprecated { netid }));
     }
@@ -587,10 +581,10 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
         None
     };
 
-    let node_type = if i_am_seed {
+    let node_type = if i_am_seed && i_am_metric {
+        relay_node_with_metrics_type(&ctx).await?
+    } else if i_am_seed {
         relay_node_type(&ctx).await?
-    } else if i_am_metric {
-        metrics_node_type(&ctx).await?
     } else {
         light_node_type(&ctx)?
     };
@@ -642,7 +636,7 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let p2p_context = P2PContext::new(cmd_tx);
     p2p_context.store_to_mm_arc(&ctx);
 
-    let fut = p2p_event_process_loop(ctx.weak(), event_rx, i_am_seed);
+    let fut = p2p_event_process_loop(ctx.weak(), event_rx, i_am_seed, i_am_metric);
     ctx.spawner().spawn(fut);
 
     Ok(())
@@ -695,6 +689,15 @@ fn relay_in_memory_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
     Ok(NodeType::RelayInMemory { port })
 }
 
+fn relay_with_metrics_in_memory_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
+    let port = ctx
+        .p2p_in_memory_port()
+        .or_mm_err(|| P2PInitError::FieldNotFoundInConfig {
+            field: "p2p_in_memory_port".to_owned(),
+        })?;
+    Ok(NodeType::RelayInMemoryWithMetrics { port })
+}
+
 fn light_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
     if ctx.p2p_in_memory() {
         return Ok(NodeType::LightInMemory);
@@ -706,22 +709,22 @@ fn light_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn metrics_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
+async fn relay_node_with_metrics_type(ctx: &MmArc) -> P2PResult<NodeType> {
     if ctx.p2p_in_memory() {
-        unimplemented!()
+        return relay_with_metrics_in_memory_node_type(ctx);
     }
     MmError::err(P2PInitError::WasmNodeCannotBeMetrics)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn metrics_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
+async fn relay_node_with_metrics_type(ctx: &MmArc) -> P2PResult<NodeType> {
     if ctx.p2p_in_memory() {
-        unimplemented!()
+        return relay_with_metrics_in_memory_node_type(ctx);
     }
 
     let (_netid, ip, network_ports, wss_certs) = allow_external_rpc_access(ctx).await?;
 
-    Ok(NodeType::Metrics {
+    Ok(NodeType::RelayWithMetrics {
         ip,
         network_ports,
         wss_certs,

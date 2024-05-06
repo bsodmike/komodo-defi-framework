@@ -63,7 +63,7 @@ use crate::mm2::lp_swap::maker_swap_v2::{MakerSwapStateMachine, MakerSwapStorage
 use crate::mm2::lp_swap::taker_swap_v2::{TakerSwapStateMachine, TakerSwapStorage};
 use bitcrypto::{dhash160, sha256};
 use coins::{lp_coinfind, lp_coinfind_or_err, CoinFindError, DexFee, MmCoin, MmCoinEnum, TradeFee, TransactionEnum};
-use common::log::{debug, warn};
+use common::log::{debug, trace, warn};
 use common::now_sec;
 use common::time_cache::DuplicateCache;
 use common::{bits256, calc_total_pages,
@@ -200,7 +200,7 @@ impl SwapMsgStore {
 }
 
 /// Storage for P2P messages, which are exchanged during SwapV2 protocol execution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SwapV2MsgStore {
     maker_negotiation: Option<MakerNegotiation>,
     taker_negotiation: Option<TakerNegotiation>,
@@ -563,6 +563,63 @@ impl SwapsContext {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn swap_db(&self) -> InitDbResult<SwapDbLocked<'_>> { self.swap_db.get_or_initialize().await }
+}
+
+// FIXME SwapMessage
+pub mod metrics {
+    use super::*;
+
+    pub mod v2 {
+        use super::*;
+
+        pub struct SwapsContext {
+            pub swap_v2_msgs: Mutex<HashMap<Uuid, SwapV2MsgStore>>,
+        }
+
+        impl SwapsContext {
+            /// Obtains a reference to this crate context, creating it if necessary.
+            pub fn from_ctx(ctx: &MmArc) -> Result<Arc<SwapsContext>, String> {
+                Ok(try_s!(from_ctx(&ctx.metrics_swaps_ctx, move || {
+                    Ok(SwapsContext {
+                        swap_v2_msgs: Mutex::new(HashMap::new()),
+                    })
+                })))
+            }
+
+            /// Initializes storage for the swap with specific uuid.
+            pub fn init_msg_v2_store(&self, uuid: Uuid, accept_only_from: PublicKey) {
+                let store = SwapV2MsgStore::new(accept_only_from);
+                self.swap_v2_msgs.lock().unwrap().insert(uuid, store);
+            }
+
+            /// Removes storage for the swap with specific uuid.
+            pub fn remove_msg_v2_store(&self, uuid: &Uuid) { self.swap_v2_msgs.lock().unwrap().remove(uuid); }
+        }
+
+        // struct SwapsData {
+        //     data: Mutex<HashMap<Uuid, SwapMessage>>,
+        // }
+
+        // impl SwapsData {
+        //     /// Obtains a reference to this crate context, creating it if necessary.
+        //     fn from_ctx(ctx: &MmArc) -> Result<Arc<SwapsV2>, String> {
+        //         Ok(try_s!(from_ctx(&ctx.metrics_stats_ctx, move || {
+        //             Ok(SwapsData {
+        //                 data: Mutex::new(HashMap::new()),
+        //             })
+        //         })))
+        //     }
+
+        //     /// Initializes storage for the swap with specific uuid.
+        //     pub fn init_metrics_msg_v2_store(&self, uuid: Uuid, accept_only_from: PublicKey) {
+        //         let store = SwapV2MsgStore::new(accept_only_from);
+        //         self.swap_v2_msgs.lock().unwrap().insert(uuid, store);
+        //     }
+
+        //     /// Removes storage for the swap with specific uuid.
+        //     pub fn remove_msg_v2_store(&self, uuid: &Uuid) { self.swap_v2_msgs.lock().unwrap().remove(uuid); }
+        // }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1739,13 +1796,20 @@ pub fn broadcast_swap_v2_msg_every<T: prost::Message + 'static>(
 }
 
 /// Processes messages received during execution of the upgraded swap protocol.
-pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PProcessResult<()> {
+pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8], i_am_metric: bool) -> P2PProcessResult<()> {
     use prost::Message;
+
+    trace!("process_swap_v2_msg: topic (uuid): {:?}", &topic);
+    trace!("process_swap_v2_msg: msg: {:?}", &msg);
+    trace!("process_swap_v2_msg: i_am_metric: {:?}", &i_am_metric);
 
     let uuid = Uuid::from_str(topic).map_to_mm(|e| P2PProcessError::DecodeError(e.to_string()))?;
 
     let swap_ctx = SwapsContext::from_ctx(&ctx).unwrap();
-    let mut msgs = swap_ctx.swap_v2_msgs.lock().unwrap();
+    let metrics_swap_ctx = metrics::v2::SwapsContext::from_ctx(&ctx).unwrap();
+    let mut msgs: std::sync::MutexGuard<HashMap<Uuid, SwapV2MsgStore>> = swap_ctx.swap_v2_msgs.lock().unwrap();
+    let mut metrics_msgs: std::sync::MutexGuard<HashMap<Uuid, SwapV2MsgStore>> =
+        metrics_swap_ctx.swap_v2_msgs.lock().unwrap();
     if let Some(msg_store) = msgs.get_mut(&uuid) {
         let signed_message = SignedMessage::decode(msg).map_to_mm(|e| P2PProcessError::DecodeError(e.to_string()))?;
 
@@ -1764,7 +1828,7 @@ pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PProcessRes
             .verify(&secp_message, &signature, &pubkey)
             .map_to_mm(|e| P2PProcessError::InvalidSignature(e.to_string()))?;
 
-        let swap_message = SwapMessage::decode(signed_message.payload.as_slice())
+        let swap_message: SwapMessage = SwapMessage::decode(signed_message.payload.as_slice())
             .map_to_mm(|e| P2PProcessError::DecodeError(e.to_string()))?;
 
         let uuid_from_message =
@@ -1789,12 +1853,52 @@ pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PProcessRes
                 msg_store.maker_negotiated = Some(maker_negotiated)
             },
             Some(swap_message::Inner::TakerFundingInfo(taker_funding)) => msg_store.taker_funding = Some(taker_funding),
-            Some(swap_message::Inner::MakerPaymentInfo(maker_payment)) => msg_store.maker_payment = Some(maker_payment),
-            Some(swap_message::Inner::TakerPaymentInfo(taker_payment)) => msg_store.taker_payment = Some(taker_payment),
+            Some(swap_message::Inner::MakerPaymentInfo(maker_payment)) => {
+                trace!("process_swap_v2_msg: maker_payment: {:?}", &maker_payment);
+                msg_store.maker_payment = Some(maker_payment)
+            },
+            Some(swap_message::Inner::TakerPaymentInfo(taker_payment)) => {
+                trace!("process_swap_v2_msg: taker_payment: {:?}", &taker_payment);
+                msg_store.taker_payment = Some(taker_payment)
+            },
             Some(swap_message::Inner::TakerPaymentSpendPreimage(preimage)) => {
                 msg_store.taker_payment_spend_preimage = Some(preimage)
             },
             None => return MmError::err(P2PProcessError::DecodeError("swap_message.inner is None".into())),
+        }
+        let msg_store_cpy: SwapV2MsgStore = msg_store.clone();
+
+        if i_am_metric {
+            //
+
+            trace!("process_swap_v2_msg: i_am_metric: {}", &i_am_metric);
+
+            if let Some(msg_store) = metrics_msgs.get_mut(&uuid) {
+                let msg_store_cpy: SwapV2MsgStore = msg_store.clone();
+                trace!(
+                    "process_swap_v2_msg: i_am_metric, inserting {} -> {:?}",
+                    &uuid,
+                    &msg_store_cpy
+                );
+
+                *msg_store = msg_store_cpy;
+            } else {
+                trace!(
+                    "process_swap_v2_msg: i_am_metric (else branch), inserting {} -> {:?}",
+                    &uuid,
+                    &msg_store_cpy
+                );
+
+                metrics_msgs.insert(uuid, msg_store_cpy);
+            }
+
+            // short-circuit on None
+            // let log_state = match LogArc::from_weak(&log_state) {
+            //     Some(log_arc) => log_arc,
+            //     _ => return,
+            // };
+
+            // Do work
         }
     }
     Ok(())

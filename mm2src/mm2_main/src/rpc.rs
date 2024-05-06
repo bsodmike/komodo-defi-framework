@@ -21,7 +21,7 @@
 //
 
 use crate::mm2::rpc::rate_limiter::RateLimitError;
-use common::log::{error, info};
+use common::log::{error, info, trace};
 use common::{err_to_rpc_json_string, err_tp_rpc_json, HttpStatusCode, APPLICATION_JSON};
 use derive_more::Display;
 use futures::future::{join_all, FutureExt};
@@ -73,6 +73,9 @@ const PUBLIC_METHODS: &[Option<&str>] = &[
     Some("version"),
     None,
 ];
+
+pub const INTERNAL_SERVER_ERROR_CODE: u16 = 500;
+pub const RESPONSE_OK_STATUS_CODE: u16 = 200;
 
 pub type DispatcherResult<T> = Result<T, MmError<DispatcherError>>;
 
@@ -209,7 +212,12 @@ pub fn escape_answer<'a, S: Into<Cow<'a, str>>>(input: S) -> Cow<'a, str> {
 
 async fn process_single_request(ctx: MmArc, req: Json, client: SocketAddr) -> Result<Response<Vec<u8>>, String> {
     let local_only = ctx.conf["rpc_local_only"].as_bool().unwrap_or(true);
+
+    trace!("process_single_request: req: {:?}", req);
+    trace!("process_single_request: mmrpc: {:?}", req["mmrpc"]);
+
     if req["mmrpc"].is_null() {
+        trace!("rpc::process_single_request: mmrpc is null -> dispatcher_legacy::process_single_request()");
         return dispatcher_legacy::process_single_request(ctx, req, client, local_only)
             .await
             .map_err(|e| ERRL!("{}", e));
@@ -226,7 +234,10 @@ async fn process_single_request(ctx: MmArc, req: Json, client: SocketAddr) -> Re
     };
 
     match dispatcher::process_single_request(ctx, req, client, local_only).await {
-        Ok(response) => Ok(response),
+        Ok(response) => {
+            trace!("rpc::process_single_request -> dispatcher::process_single_request()");
+            Ok(response)
+        },
         Err(e) => {
             // return always serialized response
             Ok(response_from_dispatcher_error(e, version, id))
@@ -262,6 +273,7 @@ async fn rpc_service(req: Request<Body>, ctx_h: u32, client: SocketAddr) -> Resp
             return ERR!("Only POST requests are supported!");
         }
 
+        trace!("process_rpc_request: req_json: {:?}", &req_json);
         process_json_request(ctx, req_json, client).await
     }
 

@@ -513,10 +513,13 @@ pub enum NodeType {
         port: u64,
     },
     /// Metrics node should have external access
-    Metrics {
+    RelayWithMetrics {
         ip: IpAddr,
         network_ports: NetworkPorts,
         wss_certs: Option<WssCerts>,
+    },
+    RelayInMemoryWithMetrics {
+        port: u64,
     },
 }
 
@@ -530,18 +533,29 @@ impl NodeType {
         match self {
             NodeType::Light { network_ports }
             | NodeType::Relay { network_ports, .. }
-            | NodeType::Metrics { network_ports, .. } => NetworkInfo::Distributed {
+            | NodeType::RelayWithMetrics { network_ports, .. } => NetworkInfo::Distributed {
                 network_ports: *network_ports,
             },
-            NodeType::LightInMemory | NodeType::RelayInMemory { .. } => NetworkInfo::InMemory,
+            NodeType::LightInMemory | NodeType::RelayInMemory { .. } | NodeType::RelayInMemoryWithMetrics { .. } => {
+                NetworkInfo::InMemory
+            },
         }
     }
 
-    pub fn is_relay(&self) -> bool { matches!(self, NodeType::Relay { .. } | NodeType::RelayInMemory { .. }) }
+    pub fn is_relay(&self) -> bool {
+        matches!(
+            self,
+            NodeType::Relay { .. }
+                | NodeType::RelayInMemory { .. }
+                | NodeType::RelayWithMetrics { .. }
+                | NodeType::RelayInMemoryWithMetrics { .. }
+        )
+    }
 
     pub fn wss_certs(&self) -> Option<&WssCerts> {
         match self {
             NodeType::Relay { wss_certs, .. } => wss_certs.as_ref(),
+            NodeType::RelayWithMetrics { wss_certs, .. } => wss_certs.as_ref(),
             _ => None,
         }
     }
