@@ -1,5 +1,4 @@
 use crate::integration_tests_common::{enable_electrum, enable_electrum_json};
-use crate::mm2_tests::tendermint_tests::swap::*;
 use crate::mm2_tests::tendermint_tests::*;
 use common::executor::Timer;
 use common::log;

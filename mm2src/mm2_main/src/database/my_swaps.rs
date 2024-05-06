@@ -52,6 +52,12 @@ pub const TRADING_PROTO_UPGRADE_MIGRATION: &[&str] = &[
     "ALTER TABLE my_swaps ADD COLUMN taker_coin_nota BOOLEAN;",
 ];
 
+/// Adds new fields required for trading protocol upgrade implementation (swap v2)
+pub const SEEDNODES_ADD_METRICS_UPGRADE_MIGRATION: &[&str] = &[
+    //
+    "ALTER TABLE my_swaps ADD COLUMN is_finished BOOLEAN NOT NULL DEFAULT 0;",
+];
+
 pub const ADD_OTHER_P2P_PUBKEY_FIELD: &str = "ALTER TABLE my_swaps ADD COLUMN other_p2p_pub BLOB;";
 // Storing rational numbers as text to maintain precision
 pub const ADD_DEX_FEE_BURN_FIELD: &str = "ALTER TABLE my_swaps ADD COLUMN dex_fee_burn TEXT;";

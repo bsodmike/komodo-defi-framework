@@ -2075,7 +2075,7 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
                     Err(e) => warn!("Swap {} file lock error: {}", uuid, e),
                 };
                 Timer::sleep(30.).await;
-                info!("->>>>>>>> ❤️‍🔥 fused");
+                info!("run_maker_swap: touch_loop() -> fused");
             }
         }
         .fuse(),

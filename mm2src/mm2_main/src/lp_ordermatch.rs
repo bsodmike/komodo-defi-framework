@@ -2368,7 +2368,7 @@ struct TrieDiff<Key, Value> {
 }
 
 #[derive(Debug)]
-struct TrieDiffHistory<Key, Value> {
+pub(crate) struct TrieDiffHistory<Key, Value> {
     inner: TimeCache<H64, TrieDiff<Key, Value>>,
 }
 
@@ -2430,7 +2430,7 @@ impl OrderbookPubkeyState {
     }
 }
 
-fn get_trie_mut<'a>(
+pub(crate) fn get_trie_mut<'a>(
     mem_db: &'a mut MemoryDB<Blake2Hasher64>,
     root: &'a mut H64,
 ) -> Result<TrieDBMut<'a, Layout>, String> {
