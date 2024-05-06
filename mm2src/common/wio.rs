@@ -18,7 +18,7 @@ pub struct Mm2Runtime(pub Runtime);
 lazy_static! {
     /// Shared asynchronous reactor.
     pub static ref CORE: Mm2Runtime = start_core_thread();
-    /// Shared CPU pool to run intensive/sleeping requests on s separate thread.
+    /// Shared CPU pool to run intensive/sleeping requests on a separate thread.
     pub static ref POOL: Mutex<ThreadPool> = Mutex::new(ThreadPool::builder()
         .pool_size(8)
         .name_prefix("POOL")
