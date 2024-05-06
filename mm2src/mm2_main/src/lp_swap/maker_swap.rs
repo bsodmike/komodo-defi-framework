@@ -2066,6 +2066,7 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
         },
     };
 
+    // FIXME: Future is fused to ensure the swap lock is only taken once.
     let mut touch_loop = Box::pin(
         async move {
             loop {
@@ -2074,6 +2075,7 @@ pub async fn run_maker_swap(swap: RunMakerSwapInput, ctx: MmArc) {
                     Err(e) => warn!("Swap {} file lock error: {}", uuid, e),
                 };
                 Timer::sleep(30.).await;
+                info!("->>>>>>>> ❤️‍🔥 fused");
             }
         }
         .fuse(),

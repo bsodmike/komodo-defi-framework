@@ -600,6 +600,15 @@ pub(crate) async fn swaps_metrics_rpc(
     ctx: MmArc,
     req: MetricsSwapsRequest,
 ) -> MmResult<MetricsSwapsResponse, MetricsSwapsErr> {
+    let i_am_seed = ctx.conf["i_am_seed"].as_bool().unwrap_or(false);
+    let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
+    if !i_am_seed && !i_am_metric {
+        return Err(MetricsSwapsErr::Internal(
+            "Metrics only supported by seed nodes with metric-gathering capabilities".to_string(),
+        )
+        .into());
+    }
+
     // NOTE: based on active_swaps_rpc
     match ctx.metrics_swaps.collect_json().map(|value| value.to_string()) {
         Ok(response) => Ok(MetricsSwapsResponse { metrics: response }),
