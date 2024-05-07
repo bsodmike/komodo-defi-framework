@@ -579,7 +579,7 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let seednodes = seednodes(&ctx)?;
 
     let ctx_on_poll = ctx.clone();
-    let force_p2p_key = if i_am_seed || i_am_metric {
+    let force_p2p_key = if i_am_seed {
         let crypto_ctx = CryptoCtx::from_ctx(&ctx).mm_err(|e| P2PInitError::Internal(e.to_string()))?;
         let key = sha256(crypto_ctx.mm2_internal_privkey_slice());
         Some(key.take())
@@ -587,9 +587,7 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
         None
     };
 
-    let node_type = if i_am_seed && i_am_metric {
-        relay_node_with_metrics_type(&ctx).await?
-    } else if i_am_seed {
+    let node_type = if i_am_seed {
         relay_node_type(&ctx).await?
     } else {
         light_node_type(&ctx)?
@@ -677,7 +675,18 @@ async fn relay_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
         return relay_in_memory_node_type(ctx);
     }
 
-    let (_netid, ip, network_ports, wss_certs) = allow_external_rpc_access(ctx).await?;
+    let netid = ctx.netid();
+    let ip = myipaddr(ctx.clone())
+        .await
+        .map_to_mm(P2PInitError::ErrorGettingMyIpAddr)?;
+    let network_ports = lp_network_ports(netid)?;
+    let wss_certs = wss_certs(ctx)?;
+    if wss_certs.is_none() {
+        const WARN_MSG: &str = r#"Please note TLS private key and certificate are not specified.
+To accept P2P WSS connections, please pass 'wss_certs' to the config.
+Example:    "wss_certs": { "server_priv_key": "/path/to/key.pem", "certificate": "/path/to/cert.pem" }"#;
+        warn!("{}", WARN_MSG);
+    }
 
     Ok(NodeType::Relay {
         ip,
@@ -712,49 +721,6 @@ fn light_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
     let netid = ctx.netid();
     let network_ports = lp_network_ports(netid)?;
     Ok(NodeType::Light { network_ports })
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn relay_node_with_metrics_type(ctx: &MmArc) -> P2PResult<NodeType> {
-    if ctx.p2p_in_memory() {
-        return relay_with_metrics_in_memory_node_type(ctx);
-    }
-    MmError::err(P2PInitError::WasmNodeCannotBeMetrics)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn relay_node_with_metrics_type(ctx: &MmArc) -> P2PResult<NodeType> {
-    if ctx.p2p_in_memory() {
-        return relay_with_metrics_in_memory_node_type(ctx);
-    }
-
-    let (_netid, ip, network_ports, wss_certs) = allow_external_rpc_access(ctx).await?;
-
-    Ok(NodeType::RelayWithMetrics {
-        ip,
-        network_ports,
-        wss_certs,
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn allow_external_rpc_access(
-    ctx: &MmArc,
-) -> P2PResult<(u16, std::net::IpAddr, mm2_libp2p::NetworkPorts, Option<WssCerts>)> {
-    let netid = ctx.netid();
-    let ip = myipaddr(ctx.clone())
-        .await
-        .map_to_mm(P2PInitError::ErrorGettingMyIpAddr)?;
-    let network_ports = lp_network_ports(netid)?;
-    let wss_certs = wss_certs(ctx)?;
-    if wss_certs.is_none() {
-        const WARN_MSG: &str = r#"Please note TLS private key and certificate are not specified.
-To accept P2P WSS connections, please pass 'wss_certs' to the config.
-Example:    "wss_certs": { "server_priv_key": "/path/to/key.pem", "certificate": "/path/to/cert.pem" }"#;
-        warn!("{}", WARN_MSG);
-    }
-
-    Ok((netid, ip, network_ports, wss_certs))
 }
 
 /// Returns non-empty vector of keys/certs or an error.
