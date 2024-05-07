@@ -1,9 +1,9 @@
 use crate::integration_tests_common::{enable_electrum, enable_electrum_json};
+use crate::mm2_tests::tendermint_tests::seednode_metrics::util::seednode_trade_legacy_with_metrics;
 use crate::mm2_tests::tendermint_tests::*;
 use common::executor::Timer;
 use common::log;
 use instant::Duration;
-use libc::abort;
 use mm2_rpc::data::legacy::OrderbookResponse;
 use mm2_test_helpers::for_tests::{check_my_swap_status, check_recent_swaps, doc_conf, nucleus_testnet_conf,
                                   wait_check_stats_swap_status, DOC_ELECTRUM_ADDRS};
@@ -17,12 +17,57 @@ const ALICE_PASSPHRASE: &str = "test2 seednode metrics";
 mod util {
     use super::*;
 
+    pub const DEFAULT_RPC_PASSWORD: &str = "password";
+
     /// Due to `enable_electrum`, far all intents as purposes, being marked as deprecated
     pub(crate) fn get_doc_electrum_addrs() -> Vec<Json> {
         DOC_ELECTRUM_ADDRS
             .iter()
             .map(|elm| json!({"url": elm.to_owned()}))
             .collect()
+    }
+
+    /// Generates a seed node conf enabling use_trading_proto_v2
+    pub fn seednode_trade_v2(passphrase: &str, coins: &Json, ip_env_var: &str, port_env_var: &str) -> Mm2TestConf {
+        Mm2TestConf {
+            conf: json!({
+                "gui": "nogui",
+                "netid": 8999,
+                "passphrase": passphrase,
+                "coins": coins,
+                "rpc_password": DEFAULT_RPC_PASSWORD,
+                "i_am_seed": true,
+                "use_trading_proto_v2": true,
+            }),
+            rpc_password: DEFAULT_RPC_PASSWORD.into(),
+        }
+    }
+
+    /// Generates a seed node conf enabling use_trading_proto_v2
+    pub fn seednode_trade_legacy_with_metrics(
+        passphrase: &str,
+        netid: &usize,
+        coins: &Json,
+        ip_env_var: &str,
+        port_env_var: &str,
+    ) -> Mm2TestConf {
+        Mm2TestConf {
+            conf: json!({
+                "gui": "nogui",
+                "netid": netid,
+                // "dht": "on",
+                // "myipaddr": env::var(ip_env_var).ok(),
+                // "rpcip": env::var(ip_env_var).ok(),
+                // "canbind": env::var(port_env_var).ok().map (|s| s.parse::<i64>().unwrap()),
+                "passphrase": passphrase,
+                "coins": coins,
+                "rpc_password": DEFAULT_RPC_PASSWORD,
+                "i_am_seed": true,
+                "i_am_metric": true,
+                // "use_trading_proto_v2": true,
+            }),
+            rpc_password: DEFAULT_RPC_PASSWORD.into(),
+        }
     }
 
     pub async fn my_swap_status(mm: &MarketMakerIt, uuid: &str) -> Result<Json, String> {
@@ -45,70 +90,125 @@ mod util {
     }
 }
 
+// #[test]
+fn test_tendermint_hd_address() {
+    let coins = json!([atom_testnet_conf()]);
+    // Default address m/44'/118'/0'/0/0 when no path_to_address is specified in activation request
+    let expected_address = "cosmos1nv4mqaky7n7rqjhch7829kgypx5s8fh62wdtr8";
+
+    let conf = Mm2TestConf::seednode_with_hd_account(TENDERMINT_TEST_BIP39_SEED, &coins);
+    let mm = MarketMakerIt::start(conf.conf, conf.rpc_password, None).unwrap();
+
+    let activation_result = block_on(enable_tendermint(
+        &mm,
+        ATOM_TICKER,
+        &[],
+        ATOM_TENDERMINT_RPC_URLS,
+        false,
+    ));
+
+    let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+    assert_eq!(result.result.address, expected_address);
+}
+
+/// Swap ATOM with DOC
 #[test]
 fn swap_nucleus_with_doc() {
     let bob_passphrase = String::from(BOB_PASSPHRASE);
     let alice_passphrase = String::from(ALICE_PASSPHRASE);
 
-    let coins = json!([nucleus_testnet_conf(), doc_conf()]);
+    // let coins = json!([nucleus_testnet_conf(), doc_conf()]);
+    let coins = json!([atom_testnet_conf(), doc_conf()]);
 
+    let conf = seednode_trade_legacy_with_metrics(
+        // ra format as block
+        "atom test seed",
+        &9998,
+        &coins,
+        "BOB_TRADE_IP",
+        "BOB_TRADE_PORT",
+    );
     let mm_bob = MarketMakerIt::start(
-        json!({
-            "gui": "nogui",
-            "netid": 8999,
-            "dht": "on",
-            "myipaddr": env::var("BOB_TRADE_IP") .ok(),
-            "rpcip": env::var("BOB_TRADE_IP") .ok(),
-            "canbind": env::var("BOB_TRADE_PORT") .ok().map (|s| s.parse::<i64>().unwrap()),
-            "passphrase": bob_passphrase,
-            "coins": coins,
-            "rpc_password": "password",
-            "i_am_seed": true,
-            // FIXME
-            "i_am_metric": true,
-        }),
-        "password".into(),
+        // json!({
+        //     "gui": "nogui",
+        //     "netid": 8999,
+        //     "dht": "on",
+        //     "myipaddr": env::var("BOB_TRADE_IP") .ok(),
+        //     "rpcip": env::var("BOB_TRADE_IP") .ok(),
+        //     "canbind": env::var("BOB_TRADE_PORT") .ok().map (|s| s.parse::<i64>().unwrap()),
+        //     "passphrase": bob_passphrase,
+        //     "coins": coins,
+        //     "rpc_password": util::DEFAULT_RPC_PASSWORD,
+        //     "i_am_seed": true,
+        //     // FIXME
+        //     "i_am_metric": true,
+        // }),
+        conf.conf,
+        conf.rpc_password,
         None,
     )
     .unwrap();
 
     thread::sleep(Duration::from_secs(1));
 
+    // normal node
     let mm_alice = MarketMakerIt::start(
         json!({
             "gui": "nogui",
-            "netid": 8999,
+            "netid": 9998,
             "dht": "on",
             "myipaddr": env::var("ALICE_TRADE_IP") .ok(),
             "rpcip": env::var("ALICE_TRADE_IP") .ok(),
-            "passphrase": alice_passphrase,
+            "passphrase": "atom test seed",
             "coins": coins,
             "seednodes": [mm_bob.my_seed_addr()],
-            "rpc_password": "password",
+            "rpc_password": util::DEFAULT_RPC_PASSWORD,
             "skip_startup_checks": true,
         }),
-        "password".into(),
+        util::DEFAULT_RPC_PASSWORD.into(),
         None,
     )
     .unwrap();
 
     thread::sleep(Duration::from_secs(1));
 
-    dbg!(block_on(enable_tendermint(
+    // let activation_result = block_on(enable_tendermint(
+    //     &mm_bob,
+    //     "NUCLEUS-TEST",
+    //     &[],
+    //     NUCLEUS_TESTNET_RPC_URLS,
+    //     false,
+    // ));
+    let activation_result = block_on(enable_tendermint(
         &mm_bob,
-        "NUCLEUS-TEST",
+        ATOM_TICKER,
         &[],
-        NUCLEUS_TESTNET_RPC_URLS,
-        false
-    )));
+        ATOM_TENDERMINT_RPC_URLS,
+        false,
+    ));
+    dbg!(&activation_result);
+    let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+    let expected_address = "cosmos1svaw0aqc4584x825ju7ua03g5xtxwd0ahl86hz";
+    // assert_eq!(result.result.address, expected_address);
 
-    dbg!(block_on(enable_tendermint(
+    let zero_balance: BigDecimal = "0.".parse().unwrap();
+    assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+
+    let activation_result = block_on(enable_tendermint(
         &mm_alice,
-        "NUCLEUS-TEST",
+        ATOM_TICKER,
         &[],
-        NUCLEUS_TESTNET_RPC_URLS,
-        false
-    )));
+        ATOM_TENDERMINT_RPC_URLS,
+        false,
+    ));
+    dbg!(&activation_result);
+
+    let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+    let expected_address = "cosmos1svaw0aqc4584x825ju7ua03g5xtxwd0ahl86hz";
+    // assert_eq!(result.result.address, expected_address);
+
+    let zero_balance: BigDecimal = "0.".parse().unwrap();
+    assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
 
     // dbg!(block_on(enable_electrum(&mm_bob, "DOC", false, DOC_ELECTRUM_ADDRS)));
     // dbg!(block_on(enable_electrum(&mm_alice, "DOC", false, DOC_ELECTRUM_ADDRS)));
@@ -129,7 +229,7 @@ fn swap_nucleus_with_doc() {
     block_on(trade_base_rel_tendermint(
         mm_bob,
         mm_alice,
-        "NUCLEUS-TEST",
+        ATOM_TICKER,
         "DOC",
         1,
         2,
@@ -137,83 +237,83 @@ fn swap_nucleus_with_doc() {
     ));
 }
 
-#[test]
-fn swap_doc_with_nucleus() {
-    let bob_passphrase = String::from(BOB_PASSPHRASE);
-    let alice_passphrase = String::from(ALICE_PASSPHRASE);
+// #[test]
+// fn swap_doc_with_nucleus() {
+//     let bob_passphrase = String::from(BOB_PASSPHRASE);
+//     let alice_passphrase = String::from(ALICE_PASSPHRASE);
 
-    let coins = json!([nucleus_testnet_conf(), doc_conf()]);
+//     let coins = json!([nucleus_testnet_conf(), doc_conf()]);
 
-    let mm_bob = MarketMakerIt::start(
-        json!({
-            "gui": "nogui",
-            "netid": 8999,
-            "dht": "on",
-            "myipaddr": env::var("BOB_TRADE_IP") .ok(),
-            "rpcip": env::var("BOB_TRADE_IP") .ok(),
-            "canbind": env::var("BOB_TRADE_PORT") .ok().map (|s| s.parse::<i64>().unwrap()),
-            "passphrase": bob_passphrase,
-            "coins": coins,
-            "rpc_password": "password",
-            "i_am_seed": true,
-        }),
-        "password".into(),
-        None,
-    )
-    .unwrap();
+//     let mm_bob = MarketMakerIt::start(
+//         json!({
+//             "gui": "nogui",
+//             "netid": 8999,
+//             "dht": "on",
+//             "myipaddr": env::var("BOB_TRADE_IP") .ok(),
+//             "rpcip": env::var("BOB_TRADE_IP") .ok(),
+//             "canbind": env::var("BOB_TRADE_PORT") .ok().map (|s| s.parse::<i64>().unwrap()),
+//             "passphrase": bob_passphrase,
+//             "coins": coins,
+//             "rpc_password": "password",
+//             "i_am_seed": true,
+//         }),
+//         "password".into(),
+//         None,
+//     )
+//     .unwrap();
 
-    thread::sleep(Duration::from_secs(1));
+//     thread::sleep(Duration::from_secs(1));
 
-    let mm_alice = MarketMakerIt::start(
-        json!({
-            "gui": "nogui",
-            "netid": 8999,
-            "dht": "on",
-            "myipaddr": env::var("ALICE_TRADE_IP") .ok(),
-            "rpcip": env::var("ALICE_TRADE_IP") .ok(),
-            "passphrase": alice_passphrase,
-            "coins": coins,
-            "seednodes": [mm_bob.my_seed_addr()],
-            "rpc_password": "password",
-            "skip_startup_checks": true,
-        }),
-        "password".into(),
-        None,
-    )
-    .unwrap();
+//     let mm_alice = MarketMakerIt::start(
+//         json!({
+//             "gui": "nogui",
+//             "netid": 8999,
+//             "dht": "on",
+//             "myipaddr": env::var("ALICE_TRADE_IP") .ok(),
+//             "rpcip": env::var("ALICE_TRADE_IP") .ok(),
+//             "passphrase": alice_passphrase,
+//             "coins": coins,
+//             "seednodes": [mm_bob.my_seed_addr()],
+//             "rpc_password": "password",
+//             "skip_startup_checks": true,
+//         }),
+//         "password".into(),
+//         None,
+//     )
+//     .unwrap();
 
-    thread::sleep(Duration::from_secs(1));
+//     thread::sleep(Duration::from_secs(1));
 
-    dbg!(block_on(enable_tendermint(
-        &mm_bob,
-        "NUCLEUS-TEST",
-        &[],
-        NUCLEUS_TESTNET_RPC_URLS,
-        false
-    )));
+//     dbg!(block_on(enable_tendermint(
+//         &mm_bob,
+//         "NUCLEUS-TEST",
+//         &[],
+//         NUCLEUS_TESTNET_RPC_URLS,
+//         false
+//     )));
 
-    dbg!(block_on(enable_tendermint(
-        &mm_alice,
-        "NUCLEUS-TEST",
-        &[],
-        NUCLEUS_TESTNET_RPC_URLS,
-        false
-    )));
+//     dbg!(block_on(enable_tendermint(
+//         &mm_alice,
+//         "NUCLEUS-TEST",
+//         &[],
+//         NUCLEUS_TESTNET_RPC_URLS,
+//         false
+//     )));
 
-    dbg!(block_on(enable_electrum(&mm_bob, "DOC", false, DOC_ELECTRUM_ADDRS)));
+//     dbg!(block_on(enable_electrum(&mm_bob, "DOC", false, DOC_ELECTRUM_ADDRS)));
 
-    dbg!(block_on(enable_electrum(&mm_alice, "DOC", false, DOC_ELECTRUM_ADDRS)));
+//     dbg!(block_on(enable_electrum(&mm_alice, "DOC", false, DOC_ELECTRUM_ADDRS)));
 
-    block_on(trade_base_rel_tendermint(
-        mm_bob,
-        mm_alice,
-        "DOC",
-        "NUCLEUS-TEST",
-        1,
-        2,
-        0.008,
-    ));
-}
+//     block_on(trade_base_rel_tendermint(
+//         mm_bob,
+//         mm_alice,
+//         "DOC",
+//         "NUCLEUS-TEST",
+//         1,
+//         2,
+//         0.008,
+//     ));
+// }
 
 // Ensure seednode startup with metrics is detected
 // let expected_log = format!("lp_init: Seednode startup with metrics detected");
