@@ -1,5 +1,6 @@
 use crate::integration_tests_common::{enable_electrum, enable_electrum_json};
-use crate::mm2_tests::tendermint_tests::seednode_metrics::util::{node_test_config, seednode_with_metrics};
+use crate::mm2_tests::tendermint_tests::seednode_metrics::util::{node_test_config, seednode_test_config,
+                                                                 SeednodeConfig};
 use crate::mm2_tests::tendermint_tests::*;
 use common::executor::Timer;
 use common::log::{self, debug};
@@ -36,6 +37,7 @@ mod util {
     #[derive(Default)]
     pub struct SeednodeConfig {
         pub trading_proto_v2: bool,
+        pub i_am_metric: bool,
     }
 
     impl SeednodeConfig {
@@ -45,19 +47,18 @@ mod util {
     /// Generates a seed node conf
     ///
     /// * `use_trading_proto_v2` - Boolean
-    pub fn seednode_with_metrics<C>(
+    pub fn seednode_test_config<C>(
         passphrase: &str,
         netid: &usize,
         coins: &Json,
         ip_env_var: &str,
         port_env_var: &str,
-        mut config: C,
+        config: C,
     ) -> Mm2TestConf
     where
-        C: FnOnce(SeednodeConfig) -> (),
+        C: FnOnce(SeednodeConfig) -> SeednodeConfig,
     {
-        let c = SeednodeConfig::new();
-
+        let c = config(SeednodeConfig::new());
         if c.trading_proto_v2 {
             debug!("use_trading_proto_v2: enabled");
         }
@@ -73,9 +74,9 @@ mod util {
                 "passphrase": passphrase,
                 "coins": coins,
                 "rpc_password": "password",
-                // "use_trading_proto_v2": c.trading_proto_v2,
+                "use_trading_proto_v2": c.trading_proto_v2,
                 "i_am_seed": true,
-                // "i_am_metric": true,
+                "i_am_metric": c.i_am_metric,
             }),
             rpc_password: DEFAULT_RPC_PASSWORD.into(),
         }
@@ -126,232 +127,262 @@ mod util {
     }
 }
 
-#[test]
-#[ignore]
-fn test_works() { let x = 0u8; }
+mod without_metrics {
+    use super::*;
 
-#[test]
-fn swap_usdc_ibc_with_nimda() {
-    let bob_passphrase = String::from(BOB_PASSPHRASE);
-    let alice_passphrase = String::from(ALICE_PASSPHRASE);
+    #[test]
+    fn swap_usdc_ibc_with_nimda() {
+        let bob_passphrase = String::from(BOB_PASSPHRASE);
+        let alice_passphrase = String::from(ALICE_PASSPHRASE);
 
-    let coins = json!([
-        usdc_ibc_iris_testnet_conf(),
-        iris_nimda_testnet_conf(),
-        iris_testnet_conf(),
-    ]);
+        let coins = json!([
+            usdc_ibc_iris_testnet_conf(),
+            iris_nimda_testnet_conf(),
+            iris_testnet_conf(),
+        ]);
 
-    // seed node
-    let settings = |mut c: util::SeednodeConfig| c.trading_proto_v2 = false;
-    let conf = seednode_with_metrics(
-        bob_passphrase.as_str(),
-        &8999,
-        &coins,
-        "BOB_TRADE_IP",
-        "BOB_TRADE_PORT",
-        settings,
-    );
-    let mm_bob = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
+        // seed node
+        let settings = |mut c: util::SeednodeConfig| -> SeednodeConfig {
+            c.trading_proto_v2 = false;
+            c.i_am_metric = false;
 
-    thread::sleep(Duration::from_secs(1));
+            c
+        };
+        let conf = seednode_test_config(
+            bob_passphrase.as_str(),
+            &8999,
+            &coins,
+            "BOB_TRADE_IP",
+            "BOB_TRADE_PORT",
+            settings,
+        );
+        let mut mm_bob = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
 
-    // normal node
-    let conf = node_test_config(
-        // ra format as block
-        alice_passphrase.as_str(),
-        &8999,
-        &coins,
-        "ALICE_TRADE_IP",
-        &mm_bob.my_seed_addr().as_str(),
-    );
-    let mm_alice = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
+        thread::sleep(Duration::from_secs(1));
 
-    thread::sleep(Duration::from_secs(1));
+        // normal node
+        let conf = node_test_config(
+            // ra format as block
+            alice_passphrase.as_str(),
+            &8999,
+            &coins,
+            "ALICE_TRADE_IP",
+            &mm_bob.my_seed_addr().as_str(),
+        );
+        let mm_alice = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
 
-    /*
-     *  FIXME
-     */
+        thread::sleep(Duration::from_secs(1));
 
-    // let zero_balance: BigDecimal = "0.".parse().unwrap();
-    // let activation_result = block_on(enable_tendermint(
-    //     &mm_bob,
-    //     "IRIS-TEST",
-    //     &["IRIS-NIMDA", "USDC-IBC-IRIS"],
-    //     IRIS_TESTNET_RPC_URLS,
-    //     false,
-    // ));
-    // let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
-    // dbg!(&result.result);
-    // assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+        // enable tendermint, ensuring we have funds to spend
+        let zero_balance: BigDecimal = "0.".parse().unwrap();
+        let activation_result = block_on(enable_tendermint(
+            &mm_bob,
+            "IRIS-TEST",
+            &["IRIS-NIMDA", "USDC-IBC-IRIS"],
+            IRIS_TESTNET_RPC_URLS,
+            false,
+        ));
+        let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
 
-    // let activation_result = block_on(enable_tendermint(
-    //     &mm_alice,
-    //     "IRIS-TEST",
-    //     &["IRIS-NIMDA", "USDC-IBC-IRIS"],
-    //     IRIS_TESTNET_RPC_URLS,
-    //     false,
-    // ));
-    // let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
-    // dbg!(&result.result);
-    // assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+        let activation_result = block_on(enable_tendermint(
+            &mm_alice,
+            "IRIS-TEST",
+            &["IRIS-NIMDA", "USDC-IBC-IRIS"],
+            IRIS_TESTNET_RPC_URLS,
+            false,
+        ));
+        let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
 
-    // SEEDNODES missing?
+        // Ensure seednode startup with metrics is not detected
+        let expected_log = format!("lp_init: Seednode startup with metrics detected");
+        let mm_bob_mut = &mut mm_bob;
+        let _ = block_on(mm_bob_mut.wait_for_log(5., |log| !log.contains(&expected_log))).expect("!wait_for_log");
 
-    // let mm_bob = MarketMakerIt::start(
-    //     json!({
-    //         "gui": "nogui",
-    //         "netid": 8999,
-    //         "dht": "on",
-    //         "myipaddr": env::var("BOB_TRADE_IP") .ok(),
-    //         "rpcip": env::var("BOB_TRADE_IP") .ok(),
-    //         "canbind": env::var("BOB_TRADE_PORT") .ok().map (|s| s.parse::<i64>().unwrap()),
-    //         "passphrase": bob_passphrase,
-    //         "coins": coins,
-    //         "rpc_password": "password",
-    //         "i_am_seed": true,
-    //     }),
-    //     "password".into(),
-    //     None,
-    // )
-    // .unwrap();
-
-    // thread::sleep(Duration::from_secs(1));
-
-    // let mm_alice = MarketMakerIt::start(
-    //     json!({
-    //         "gui": "nogui",
-    //         "netid": 8999,
-    //         "dht": "on",
-    //         "myipaddr": env::var("ALICE_TRADE_IP") .ok(),
-    //         "rpcip": env::var("ALICE_TRADE_IP") .ok(),
-    //         "passphrase": alice_passphrase,
-    //         "coins": coins,
-    //         "seednodes": [mm_bob.my_seed_addr()],
-    //         "rpc_password": "password",
-    //         "skip_startup_checks": true,
-    //     }),
-    //     "password".into(),
-    //     None,
-    // )
-    // .unwrap();
-
-    // thread::sleep(Duration::from_secs(1));
-
-    dbg!(block_on(enable_tendermint(
-        &mm_bob,
-        "IRIS-TEST",
-        &["IRIS-NIMDA", "USDC-IBC-IRIS"],
-        IRIS_TESTNET_RPC_URLS,
-        false
-    )));
-
-    dbg!(block_on(enable_tendermint(
-        &mm_alice,
-        "IRIS-TEST",
-        &["IRIS-NIMDA", "USDC-IBC-IRIS"],
-        IRIS_TESTNET_RPC_URLS,
-        false
-    )));
-
-    block_on(crate::mm2_tests::tendermint_tests::swap::trade_base_rel_tendermint(
-        mm_bob,
-        mm_alice,
-        "USDC-IBC-IRIS",
-        "IRIS-NIMDA",
-        1,
-        2,
-        0.008,
-    ));
+        block_on(trade_base_rel_tendermint(
+            mm_bob,
+            mm_alice,
+            "USDC-IBC-IRIS",
+            "IRIS-NIMDA",
+            1,
+            2,
+            0.008,
+        ));
+    }
 }
 
-// #[test]
-// fn swap_doc_with_nucleus() {
-//     let bob_passphrase = String::from(BOB_PASSPHRASE);
-//     let alice_passphrase = String::from(ALICE_PASSPHRASE);
+mod trading_proto_v1 {
+    use super::*;
 
-//     let coins = json!([nucleus_testnet_conf(), doc_conf()]);
+    #[test]
+    fn swap_usdc_ibc_with_nimda() {
+        let bob_passphrase = String::from(BOB_PASSPHRASE);
+        let alice_passphrase = String::from(ALICE_PASSPHRASE);
 
-//     let mm_bob = MarketMakerIt::start(
-//         json!({
-//             "gui": "nogui",
-//             "netid": 8999,
-//             "dht": "on",
-//             "myipaddr": env::var("BOB_TRADE_IP") .ok(),
-//             "rpcip": env::var("BOB_TRADE_IP") .ok(),
-//             "canbind": env::var("BOB_TRADE_PORT") .ok().map (|s| s.parse::<i64>().unwrap()),
-//             "passphrase": bob_passphrase,
-//             "coins": coins,
-//             "rpc_password": "password",
-//             "i_am_seed": true,
-//         }),
-//         "password".into(),
-//         None,
-//     )
-//     .unwrap();
+        let coins = json!([
+            usdc_ibc_iris_testnet_conf(),
+            iris_nimda_testnet_conf(),
+            iris_testnet_conf(),
+        ]);
 
-//     thread::sleep(Duration::from_secs(1));
+        // seed node
+        let settings = |mut c: util::SeednodeConfig| -> SeednodeConfig {
+            c.trading_proto_v2 = false;
+            c.i_am_metric = true;
 
-//     let mm_alice = MarketMakerIt::start(
-//         json!({
-//             "gui": "nogui",
-//             "netid": 8999,
-//             "dht": "on",
-//             "myipaddr": env::var("ALICE_TRADE_IP") .ok(),
-//             "rpcip": env::var("ALICE_TRADE_IP") .ok(),
-//             "passphrase": alice_passphrase,
-//             "coins": coins,
-//             "seednodes": [mm_bob.my_seed_addr()],
-//             "rpc_password": "password",
-//             "skip_startup_checks": true,
-//         }),
-//         "password".into(),
-//         None,
-//     )
-//     .unwrap();
+            c
+        };
+        let conf = seednode_test_config(
+            bob_passphrase.as_str(),
+            &8999,
+            &coins,
+            "BOB_TRADE_IP",
+            "BOB_TRADE_PORT",
+            settings,
+        );
+        let mut mm_bob = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
 
-//     thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(1));
 
-//     dbg!(block_on(enable_tendermint(
-//         &mm_bob,
-//         "NUCLEUS-TEST",
-//         &[],
-//         NUCLEUS_TESTNET_RPC_URLS,
-//         false
-//     )));
+        // normal node
+        let conf = node_test_config(
+            // ra format as block
+            alice_passphrase.as_str(),
+            &8999,
+            &coins,
+            "ALICE_TRADE_IP",
+            &mm_bob.my_seed_addr().as_str(),
+        );
+        let mm_alice = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
 
-//     dbg!(block_on(enable_tendermint(
-//         &mm_alice,
-//         "NUCLEUS-TEST",
-//         &[],
-//         NUCLEUS_TESTNET_RPC_URLS,
-//         false
-//     )));
+        thread::sleep(Duration::from_secs(1));
 
-//     dbg!(block_on(enable_electrum(&mm_bob, "DOC", false, DOC_ELECTRUM_ADDRS)));
+        // enable tendermint, ensuring we have funds to spend
+        let zero_balance: BigDecimal = "0.".parse().unwrap();
+        let activation_result = block_on(enable_tendermint(
+            &mm_bob,
+            "IRIS-TEST",
+            &["IRIS-NIMDA", "USDC-IBC-IRIS"],
+            IRIS_TESTNET_RPC_URLS,
+            false,
+        ));
+        let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
 
-//     dbg!(block_on(enable_electrum(&mm_alice, "DOC", false, DOC_ELECTRUM_ADDRS)));
+        let activation_result = block_on(enable_tendermint(
+            &mm_alice,
+            "IRIS-TEST",
+            &["IRIS-NIMDA", "USDC-IBC-IRIS"],
+            IRIS_TESTNET_RPC_URLS,
+            false,
+        ));
+        let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
 
-//     block_on(trade_base_rel_tendermint(
-//         mm_bob,
-//         mm_alice,
-//         "DOC",
-//         "NUCLEUS-TEST",
-//         1,
-//         2,
-//         0.008,
-//     ));
-// }
+        // Ensure seednode startup with metrics is detected
+        let expected_log = format!("lp_init: Seednode startup with metrics detected");
+        let mm_bob_mut = &mut mm_bob;
+        let _ = block_on(mm_bob_mut.wait_for_log(5., |log| log.contains(&expected_log))).expect("!wait_for_log");
 
-// Ensure seednode startup with metrics is detected
-// let expected_log = format!("lp_init: Seednode startup with metrics detected");
-// mm_bob
-//     .wait_for_log(5., |log| log.contains(&expected_log))
-//     .await
-//     .unwrap();
+        block_on(trade_base_rel_tendermint(
+            mm_bob,
+            mm_alice,
+            "USDC-IBC-IRIS",
+            "IRIS-NIMDA",
+            1,
+            2,
+            0.008,
+        ));
+    }
+}
 
-// panic!("test");
+mod trading_proto_v2 {
+    use super::*;
 
-pub async fn trade_base_rel_tendermint_custom(
+    #[test]
+    fn swap_usdc_ibc_with_nimda() {
+        let bob_passphrase = String::from(BOB_PASSPHRASE);
+        let alice_passphrase = String::from(ALICE_PASSPHRASE);
+
+        let coins = json!([
+            usdc_ibc_iris_testnet_conf(),
+            iris_nimda_testnet_conf(),
+            iris_testnet_conf(),
+        ]);
+
+        // seed node
+        let settings = |mut c: util::SeednodeConfig| -> SeednodeConfig {
+            c.trading_proto_v2 = true;
+            c.i_am_metric = true;
+
+            c
+        };
+        let conf = seednode_test_config(
+            bob_passphrase.as_str(),
+            &8999,
+            &coins,
+            "BOB_TRADE_IP",
+            "BOB_TRADE_PORT",
+            settings,
+        );
+        let mut mm_bob = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
+
+        thread::sleep(Duration::from_secs(1));
+
+        // normal node
+        let conf = node_test_config(
+            // ra format as block
+            alice_passphrase.as_str(),
+            &8999,
+            &coins,
+            "ALICE_TRADE_IP",
+            &mm_bob.my_seed_addr().as_str(),
+        );
+        let mm_alice = MarketMakerIt::start(conf.conf, "password".into(), None).unwrap();
+
+        thread::sleep(Duration::from_secs(1));
+
+        // enable tendermint, ensuring we have funds to spend
+        let zero_balance: BigDecimal = "0.".parse().unwrap();
+        let activation_result = block_on(enable_tendermint(
+            &mm_bob,
+            "IRIS-TEST",
+            &["IRIS-NIMDA", "USDC-IBC-IRIS"],
+            IRIS_TESTNET_RPC_URLS,
+            false,
+        ));
+        let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+
+        let activation_result = block_on(enable_tendermint(
+            &mm_alice,
+            "IRIS-TEST",
+            &["IRIS-NIMDA", "USDC-IBC-IRIS"],
+            IRIS_TESTNET_RPC_URLS,
+            false,
+        ));
+        let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+
+        // Ensure seednode startup with metrics is detected
+        let expected_log = format!("lp_init: Seednode startup with metrics detected");
+        let mm_bob_mut = &mut mm_bob;
+        let _ = block_on(mm_bob_mut.wait_for_log(5., |log| log.contains(&expected_log))).expect("!wait_for_log");
+
+        block_on(trade_base_rel_tendermint(
+            mm_bob,
+            mm_alice,
+            "USDC-IBC-IRIS",
+            "IRIS-NIMDA",
+            1,
+            2,
+            0.008,
+        ));
+    }
+}
+
+pub async fn trade_base_rel_tendermint(
     mut mm_bob: MarketMakerIt,
     mut mm_alice: MarketMakerIt,
     base: &str,
@@ -360,6 +391,13 @@ pub async fn trade_base_rel_tendermint_custom(
     taker_price: i32,
     volume: f64,
 ) {
+    // // Ensure seednode startup with metrics is detected
+    // let expected_log = format!("lp_init: Seednode startup with metrics detected");
+    // mm_bob
+    //     .wait_for_log(5., |log| log.contains(&expected_log))
+    //     .await
+    //     .unwrap();
+
     log!("Issue bob {}/{} sell request", base, rel);
     let rc = mm_bob
         .rpc(&json!({
