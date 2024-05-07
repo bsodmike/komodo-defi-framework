@@ -243,6 +243,8 @@ pub const ETH_SEPOLIA_TOKEN_CONTRACT: &str = "0x09d0d71FBC00D7CCF9CFf132f5E6825C
 
 pub const BCHD_TESTNET_URLS: &[&str] = &["https://bchd-testnet.greyh.at:18335"];
 
+const LOG_WAIT_FOR_TIMEOUT: f64 = 22.;
+
 pub struct Mm2TestConf {
     pub conf: Json,
     pub rpc_password: String,
@@ -1559,9 +1561,11 @@ impl MarketMakerIt {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn check_seednodes(&mut self) -> Result<(), String> {
         // wait for at least 1 node to be added to relay mesh
-        self.wait_for_log(22., |log| log.contains("Completed IAmrelay handling for peer"))
-            .await
-            .map_err(|e| ERRL!("{}", e))
+        self.wait_for_log(LOG_WAIT_FOR_TIMEOUT, |log| {
+            log.contains("Completed IAmrelay handling for peer")
+        })
+        .await
+        .map_err(|e| ERRL!("{}", e))
     }
 
     /// Wait for the node to start listening to new P2P connections.
@@ -1571,14 +1575,14 @@ impl MarketMakerIt {
     /// because the P2P module logs to a global logger and doesn't log to the dashboard.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn wait_for_p2p_listen(&mut self) -> Result<(), String> {
-        self.wait_for_log(22., |log| log.contains("INFO Listening on"))
+        self.wait_for_log(LOG_WAIT_FOR_TIMEOUT, |log| log.contains("INFO Listening on"))
             .await
-            .map_err(|e| ERRL!("{}", e))
+            .map_err(|e| ERRL!("Error: wait_for_p2p_listen: {}", e))
     }
 
     /// Wait for the RPC to be up.
     pub async fn wait_for_rpc_is_up(&mut self) -> Result<(), String> {
-        self.wait_for_log(22., |log| log.contains(">>>>>>>>> DEX stats "))
+        self.wait_for_log(LOG_WAIT_FOR_TIMEOUT, |log| log.contains(">>>>>>>>> DEX stats "))
             .await
             .map_err(|e| ERRL!("{}", e))
     }
@@ -3335,7 +3339,7 @@ pub async fn test_qrc20_history_impl(local_start: Option<LocalStart>) {
     #[cfg(not(target_arch = "wasm32"))]
     common::log::info!("log path: {}", mm.log_path.display());
 
-    mm.wait_for_log(22., |log| log.contains(">>>>>>>>> DEX stats "))
+    mm.wait_for_log(LOG_WAIT_FOR_TIMEOUT, |log| log.contains(">>>>>>>>> DEX stats "))
         .await
         .unwrap();
 
@@ -3365,9 +3369,11 @@ pub async fn test_qrc20_history_impl(local_start: Option<LocalStart>) {
     );
 
     // Wait till tx_history will not be loaded
-    mm.wait_for_log(22., |log| log.contains("history has been loaded successfully"))
-        .await
-        .unwrap();
+    mm.wait_for_log(LOG_WAIT_FOR_TIMEOUT, |log| {
+        log.contains("history has been loaded successfully")
+    })
+    .await
+    .unwrap();
 
     // let the MarketMaker save the history to the file
     Timer::sleep(1.).await;

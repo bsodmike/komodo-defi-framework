@@ -526,6 +526,12 @@ pub async fn lp_init(ctx: MmArc, version: String, datetime: String) -> MmInitRes
         }
     });
 
+    let i_am_seed = ctx.conf["i_am_seed"].as_bool().unwrap_or(false);
+    let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
+    if i_am_seed && i_am_metric {
+        info!("lp_init: Seednode startup with metrics detected");
+    }
+
     // In the mobile version we might depend on `lp_init` staying around until the context stops.
     loop {
         if ctx.is_stopping() {
