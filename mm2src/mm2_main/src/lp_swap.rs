@@ -1906,86 +1906,16 @@ pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8], i_am_metric: boo
 }
 
 mod seed_nodes {
-    use crate::mm2::lp_ordermatch::Blake2Hasher64;
-    use crate::mm2::lp_ordermatch::TrieDiffHistory;
-    use crate::mm2::lp_swap::get_trie_mut;
     use common::log::error;
     use common::now_sec;
     use common::time_cache::TimeCache;
-    use sp_trie::MemoryDB;
-    use sp_trie::TrieMut;
     use std::collections::hash_map::{HashMap, RawEntryMut};
     use std::collections::HashSet;
     use std::time::Duration;
     use uuid::Uuid;
 
-    #[cfg(not(test))]
-    const TRIE_STATE_HISTORY_TIMEOUT: u64 = 14400;
-    #[cfg(test)]
-    const TRIE_STATE_HISTORY_TIMEOUT: u64 = 3;
-
-    /// Alphabetically ordered orderbook pair
-    type AlbOrderedSwapMemoryStorePair = String;
-    type TrieOrderHistory = TrieDiffHistory<Uuid, SwapMemoryStoreItem>;
-    type H64 = [u8; 8];
-
-    fn alb_ordered_pair(base: &str, rel: &str) -> AlbOrderedSwapMemoryStorePair {
-        let (first, second) = if base < rel { (base, rel) } else { (rel, base) };
-        let mut res = first.to_owned();
-        res.push(':');
-        res.push_str(second);
-        res
-    }
-
-    fn pubkey_state_mut<'a>(
-        state: &'a mut HashMap<String, SwapMemoryStorePubkeyState>,
-        from_pubkey: &str,
-    ) -> &'a mut SwapMemoryStorePubkeyState {
-        match state.raw_entry_mut().from_key(from_pubkey) {
-            RawEntryMut::Occupied(e) => e.into_mut(),
-            RawEntryMut::Vacant(e) => {
-                let state =
-                    SwapMemoryStorePubkeyState::with_history_timeout(Duration::new(TRIE_STATE_HISTORY_TIMEOUT, 0));
-                e.insert(from_pubkey.to_string(), state).1
-            },
-        }
-    }
-
-    fn swap_memory_store_pair_root_mut<'a>(
-        state: &'a mut HashMap<AlbOrderedSwapMemoryStorePair, H64>,
-        pair: &str,
-    ) -> &'a mut H64 {
-        match state.raw_entry_mut().from_key(pair) {
-            RawEntryMut::Occupied(e) => e.into_mut(),
-            RawEntryMut::Vacant(e) => e.insert(pair.to_string(), Default::default()).1,
-        }
-    }
-
-    struct SwapMemoryStorePubkeyState {
-        /// Timestamp of the latest keep alive message received
-        last_keep_alive: u64,
-        /// The map storing historical data about specific pair subtrie changes
-        /// Used to get diffs of pairs between specific root hashes
-        store_pairs_trie_state_history: common::time_cache::TimeCache<AlbOrderedSwapMemoryStorePair, TrieOrderHistory>,
-        /// The known UUIDs owned by pubkey with alphabetically ordered pair to ease the lookup during pubkey requests
-        store_uuids: HashSet<(Uuid, AlbOrderedSwapMemoryStorePair)>,
-        /// The map storing alphabetically ordered pair with trie root hash of orders owned by pubkey.
-        trie_roots: HashMap<AlbOrderedSwapMemoryStorePair, H64>,
-    }
-
-    impl SwapMemoryStorePubkeyState {
-        pub fn with_history_timeout(ttl: Duration) -> SwapMemoryStorePubkeyState {
-            SwapMemoryStorePubkeyState {
-                last_keep_alive: now_sec(),
-                store_pairs_trie_state_history: TimeCache::new(ttl),
-                store_uuids: HashSet::default(),
-                trie_roots: HashMap::default(),
-            }
-        }
-    }
-
-    #[derive(Clone, Debug, PartialEq)]
-    pub(crate) struct SwapMemoryStoreItem {
+    #[derive(Debug, Default, Clone, PartialEq)]
+    pub struct SwapMemoryStoreItem {
         pubkey: String,
         uuid: Uuid,
         base: String,
@@ -1994,7 +1924,7 @@ mod seed_nodes {
     }
 
     impl SwapMemoryStoreItem {
-        fn new() -> Self { Self { ..Default } }
+        fn new() -> Self { Self { ..Default::default() } }
     }
 
     /// Builds SwapMemoryStoreItemBuilder struct to build SwapMemoryStoreItem
@@ -2004,41 +1934,16 @@ mod seed_nodes {
         pub fn new() -> Self { Self {} }
 
         pub fn build(&self) -> Result<SwapMemoryStoreItem, String> {
-            //
+            let item = SwapMemoryStoreItem::new();
+
+            Ok(item)
         }
     }
     #[derive(Default)]
-    struct SwapMemoryStore {
-        /// a map of swap memory store states of known pubkeys
-        pubkeys_state: HashMap<String, SwapMemoryStorePubkeyState>,
-        /// MemoryDB instance to store Patricia Tries data
-        memory_db: MemoryDB<Blake2Hasher64>,
-    }
+    struct SwapMemoryStore {}
 
     impl SwapMemoryStore {
-        fn insert_or_update_trie(&mut self, item: SwapMemoryStoreItem) {
-            let uuid = uuid::Uuid::new_v4();
-            let data: Vec<u8> = Vec::new();
-
-            let pubkey_state = pubkey_state_mut(&mut self.pubkeys_state, &item.pubkey);
-            let alb_ordered = alb_ordered_pair(&item.base, &item.rel);
-            let pair_root = swap_memory_store_pair_root_mut(&mut pubkey_state.trie_roots, &alb_ordered);
-            let prev_root = *pair_root;
-
-            {
-                let mut pair_trie = match get_trie_mut(&mut self.memory_db, pair_root) {
-                    Ok(trie) => trie,
-                    Err(e) => {
-                        error!("Error getting {} trie with root {:?}", e, prev_root);
-                        return;
-                    },
-                };
-                if let Err(e) = pair_trie.insert(uuid.as_bytes(), &data) {
-                    error!("Error {:?} on insertion to trie. Key {}, value {:?}", e, &uuid, &data);
-                    return;
-                };
-            }
-        }
+        //
     }
 }
 
