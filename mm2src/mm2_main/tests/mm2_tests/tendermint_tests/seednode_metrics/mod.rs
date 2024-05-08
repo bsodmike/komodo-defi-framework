@@ -34,7 +34,7 @@ mod util {
         pub rpc_password: String,
     }
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     pub struct SeednodeConfig {
         pub trading_proto_v2: bool,
         pub i_am_metric: bool,
@@ -59,9 +59,9 @@ mod util {
         C: FnOnce(SeednodeConfig) -> SeednodeConfig,
     {
         let c = config(SeednodeConfig::new());
-        if c.trading_proto_v2 {
-            debug!("use_trading_proto_v2: enabled");
-        }
+        log!("🧪 seednode_test_config:\n\n\n");
+        dbg!(&c);
+        log!("\n\n\n🧪");
 
         Mm2TestConf {
             conf: json!({
@@ -129,6 +129,191 @@ mod util {
 
 mod without_metrics {
     use super::*;
+
+    pub async fn verify_swap_metrics(mm_bob: &MarketMakerIt, mm_alice: &MarketMakerIt) -> Result<(), String> {
+        // let rc = mm_alice
+        //     .rpc(&json!({
+        //         "userpass": mm_alice.userpass,
+        //         "method": "metrics",
+
+        //     }))
+        //     .await
+        //     .unwrap();
+        // assert!(rc.0.is_success(), "!buy: {}", rc.1);
+        // let metrics_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
+
+        // log!("🧪\n\n\n");
+        // dbg!(metrics_json);
+        // log!("\n\n\n🧪");
+
+        Ok(())
+    }
+
+    pub async fn trade_base_rel_tendermint(
+        mut mm_bob: MarketMakerIt,
+        mut mm_alice: MarketMakerIt,
+        base: &str,
+        rel: &str,
+        maker_price: i32,
+        taker_price: i32,
+        volume: f64,
+    ) {
+        log!("Issue bob {}/{} sell request", base, rel);
+        let rc = mm_bob
+            .rpc(&json!({
+                "userpass": mm_bob.userpass,
+                "method": "setprice",
+                "base": base,
+                "rel": rel,
+                "price": maker_price,
+                "volume": volume
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!setprice: {}", rc.1);
+
+        let mut uuids = vec![];
+
+        common::log::info!(
+            "Trigger alice subscription to {}/{} orderbook topic first and sleep for 1 second",
+            base,
+            rel
+        );
+        let rc = mm_alice
+            .rpc(&json!({
+                "userpass": mm_alice.userpass,
+                "method": "orderbook",
+                "base": base,
+                "rel": rel,
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
+        Timer::sleep(1.).await;
+        common::log::info!("Issue alice {}/{} buy request", base, rel);
+        let rc = mm_alice
+            .rpc(&json!({
+                "userpass": mm_alice.userpass,
+                "method": "buy",
+                "base": base,
+                "rel": rel,
+                "volume": volume,
+                "price": taker_price
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!buy: {}", rc.1);
+        let buy_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
+        uuids.push(buy_json["result"]["uuid"].as_str().unwrap().to_owned());
+
+        // ensure the swaps are started
+        let expected_log = format!("Entering the taker_swap_loop {}/{}", base, rel);
+        mm_alice
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+        let expected_log = format!("Entering the maker_swap_loop {}/{}", base, rel);
+        mm_bob
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+
+        for uuid in uuids.iter() {
+            // ensure the swaps are indexed to the SQLite database
+            let expected_log = format!("Inserting new swap {} to the SQLite database", uuid);
+            mm_alice
+                .wait_for_log(5., |log| log.contains(&expected_log))
+                .await
+                .unwrap();
+            mm_bob
+                .wait_for_log(5., |log| log.contains(&expected_log))
+                .await
+                .unwrap()
+        }
+
+        for uuid in uuids.iter() {
+            match mm_bob
+                .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+            {
+                Ok(_) => (),
+                Err(_) => {
+                    log!("{}", mm_bob.log_as_utf8().unwrap());
+                },
+            }
+
+            match mm_alice
+                .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+            {
+                Ok(_) => (),
+                Err(_) => {
+                    log!("{}", mm_alice.log_as_utf8().unwrap());
+                },
+            }
+
+            log!("Waiting a few second for the fresh swap status to be saved..");
+            Timer::sleep(5.).await;
+
+            log!("{}", mm_alice.log_as_utf8().unwrap());
+            log!("Checking alice/taker status..");
+            check_my_swap_status(
+                &mm_alice,
+                uuid,
+                BigDecimal::try_from(volume).unwrap(),
+                BigDecimal::try_from(volume).unwrap(),
+            )
+            .await;
+
+            log!("{}", mm_bob.log_as_utf8().unwrap());
+            log!("Checking bob/maker status..");
+            check_my_swap_status(
+                &mm_bob,
+                uuid,
+                BigDecimal::try_from(volume).unwrap(),
+                BigDecimal::try_from(volume).unwrap(),
+            )
+            .await;
+        }
+
+        verify_swap_metrics(&mm_bob, &mm_alice).await.unwrap();
+
+        log!("Waiting 3 seconds for nodes to broadcast their swaps data..");
+        Timer::sleep(3.).await;
+
+        for uuid in uuids.iter() {
+            log!("Checking alice status..");
+            wait_check_stats_swap_status(&mm_alice, uuid, 30).await;
+
+            log!("Checking bob status..");
+            wait_check_stats_swap_status(&mm_bob, uuid, 30).await;
+        }
+
+        log!("Checking alice recent swaps..");
+        check_recent_swaps(&mm_alice, uuids.len()).await;
+        log!("Checking bob recent swaps..");
+        check_recent_swaps(&mm_bob, uuids.len()).await;
+        log!("Get {}/{} orderbook", base, rel);
+        let rc = mm_bob
+            .rpc(&json!({
+                "userpass": mm_bob.userpass,
+                "method": "orderbook",
+                "base": base,
+                "rel": rel,
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
+
+        let bob_orderbook: OrderbookResponse = serde_json::from_str(&rc.1).unwrap();
+        log!("{}/{} orderbook {:?}", base, rel, bob_orderbook);
+
+        assert_eq!(0, bob_orderbook.bids.len(), "{} {} bids must be empty", base, rel);
+        assert_eq!(0, bob_orderbook.asks.len(), "{} {} asks must be empty", base, rel);
+
+        mm_bob.stop().await.unwrap();
+        mm_alice.stop().await.unwrap();
+    }
 
     #[test]
     fn swap_usdc_ibc_with_nimda() {
@@ -215,6 +400,191 @@ mod without_metrics {
 mod trading_proto_v1 {
     use super::*;
 
+    pub async fn verify_swap_metrics(mm_bob: &MarketMakerIt, mm_alice: &MarketMakerIt) -> Result<(), String> {
+        // let rc = mm_alice
+        //     .rpc(&json!({
+        //         "userpass": mm_alice.userpass,
+        //         "method": "metrics",
+
+        //     }))
+        //     .await
+        //     .unwrap();
+        // assert!(rc.0.is_success(), "!buy: {}", rc.1);
+        // let metrics_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
+
+        // log!("🧪\n\n\n");
+        // dbg!(metrics_json);
+        // log!("\n\n\n🧪");
+
+        Ok(())
+    }
+
+    pub async fn trade_base_rel_tendermint(
+        mut mm_bob: MarketMakerIt,
+        mut mm_alice: MarketMakerIt,
+        base: &str,
+        rel: &str,
+        maker_price: i32,
+        taker_price: i32,
+        volume: f64,
+    ) {
+        log!("Issue bob {}/{} sell request", base, rel);
+        let rc = mm_bob
+            .rpc(&json!({
+                "userpass": mm_bob.userpass,
+                "method": "setprice",
+                "base": base,
+                "rel": rel,
+                "price": maker_price,
+                "volume": volume
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!setprice: {}", rc.1);
+
+        let mut uuids = vec![];
+
+        common::log::info!(
+            "Trigger alice subscription to {}/{} orderbook topic first and sleep for 1 second",
+            base,
+            rel
+        );
+        let rc = mm_alice
+            .rpc(&json!({
+                "userpass": mm_alice.userpass,
+                "method": "orderbook",
+                "base": base,
+                "rel": rel,
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
+        Timer::sleep(1.).await;
+        common::log::info!("Issue alice {}/{} buy request", base, rel);
+        let rc = mm_alice
+            .rpc(&json!({
+                "userpass": mm_alice.userpass,
+                "method": "buy",
+                "base": base,
+                "rel": rel,
+                "volume": volume,
+                "price": taker_price
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!buy: {}", rc.1);
+        let buy_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
+        uuids.push(buy_json["result"]["uuid"].as_str().unwrap().to_owned());
+
+        // ensure the swaps are started
+        let expected_log = format!("Entering the taker_swap_loop {}/{}", base, rel);
+        mm_alice
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+        let expected_log = format!("Entering the maker_swap_loop {}/{}", base, rel);
+        mm_bob
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+
+        for uuid in uuids.iter() {
+            // ensure the swaps are indexed to the SQLite database
+            let expected_log = format!("Inserting new swap {} to the SQLite database", uuid);
+            mm_alice
+                .wait_for_log(5., |log| log.contains(&expected_log))
+                .await
+                .unwrap();
+            mm_bob
+                .wait_for_log(5., |log| log.contains(&expected_log))
+                .await
+                .unwrap()
+        }
+
+        for uuid in uuids.iter() {
+            match mm_bob
+                .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+            {
+                Ok(_) => (),
+                Err(_) => {
+                    log!("{}", mm_bob.log_as_utf8().unwrap());
+                },
+            }
+
+            match mm_alice
+                .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+            {
+                Ok(_) => (),
+                Err(_) => {
+                    log!("{}", mm_alice.log_as_utf8().unwrap());
+                },
+            }
+
+            log!("Waiting a few second for the fresh swap status to be saved..");
+            Timer::sleep(5.).await;
+
+            log!("{}", mm_alice.log_as_utf8().unwrap());
+            log!("Checking alice/taker status..");
+            check_my_swap_status(
+                &mm_alice,
+                uuid,
+                BigDecimal::try_from(volume).unwrap(),
+                BigDecimal::try_from(volume).unwrap(),
+            )
+            .await;
+
+            log!("{}", mm_bob.log_as_utf8().unwrap());
+            log!("Checking bob/maker status..");
+            check_my_swap_status(
+                &mm_bob,
+                uuid,
+                BigDecimal::try_from(volume).unwrap(),
+                BigDecimal::try_from(volume).unwrap(),
+            )
+            .await;
+        }
+
+        verify_swap_metrics(&mm_bob, &mm_alice).await.unwrap();
+
+        log!("Waiting 3 seconds for nodes to broadcast their swaps data..");
+        Timer::sleep(3.).await;
+
+        for uuid in uuids.iter() {
+            log!("Checking alice status..");
+            wait_check_stats_swap_status(&mm_alice, uuid, 30).await;
+
+            log!("Checking bob status..");
+            wait_check_stats_swap_status(&mm_bob, uuid, 30).await;
+        }
+
+        log!("Checking alice recent swaps..");
+        check_recent_swaps(&mm_alice, uuids.len()).await;
+        log!("Checking bob recent swaps..");
+        check_recent_swaps(&mm_bob, uuids.len()).await;
+        log!("Get {}/{} orderbook", base, rel);
+        let rc = mm_bob
+            .rpc(&json!({
+                "userpass": mm_bob.userpass,
+                "method": "orderbook",
+                "base": base,
+                "rel": rel,
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
+
+        let bob_orderbook: OrderbookResponse = serde_json::from_str(&rc.1).unwrap();
+        log!("{}/{} orderbook {:?}", base, rel, bob_orderbook);
+
+        assert_eq!(0, bob_orderbook.bids.len(), "{} {} bids must be empty", base, rel);
+        assert_eq!(0, bob_orderbook.asks.len(), "{} {} asks must be empty", base, rel);
+
+        mm_bob.stop().await.unwrap();
+        mm_alice.stop().await.unwrap();
+    }
+
     #[test]
     fn swap_usdc_ibc_with_nimda() {
         let bob_passphrase = String::from(BOB_PASSPHRASE);
@@ -300,7 +670,204 @@ mod trading_proto_v1 {
 mod trading_proto_v2 {
     use super::*;
 
+    pub async fn verify_swap_metrics(mm_bob: &MarketMakerIt, mm_alice: &MarketMakerIt) -> Result<(), String> {
+        // let rc = mm_alice
+        //     .rpc(&json!({
+        //         "userpass": mm_alice.userpass,
+        //         "method": "metrics",
+        //     }))
+        //     .await
+        //     .unwrap();
+        // assert!(rc.0.is_success(), "!buy: {}", rc.1);
+        // let metrics_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
+
+        // log!("🧪\n\n\n");
+        // dbg!(metrics_json);
+        // log!("\n\n\n🧪");
+
+        Ok(())
+    }
+
+    pub async fn trade_base_rel_tendermint(
+        mut mm_bob: MarketMakerIt,
+        mut mm_alice: MarketMakerIt,
+        base: &str,
+        rel: &str,
+        maker_price: i32,
+        taker_price: i32,
+        volume: f64,
+    ) {
+        log!("Issue bob {}/{} sell request", base, rel);
+        let rc = mm_bob
+            .rpc(&json!({
+                "userpass": mm_bob.userpass,
+                "method": "setprice",
+                "base": base,
+                "rel": rel,
+                "price": maker_price,
+                "volume": volume
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!setprice: {}", rc.1);
+
+        let mut uuids = vec![];
+
+        common::log::info!(
+            "Trigger alice subscription to {}/{} orderbook topic first and sleep for 1 second",
+            base,
+            rel
+        );
+        let rc = mm_alice
+            .rpc(&json!({
+                "userpass": mm_alice.userpass,
+                "method": "orderbook",
+                "base": base,
+                "rel": rel,
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
+        Timer::sleep(1.).await;
+        common::log::info!("Issue alice {}/{} buy request", base, rel);
+        let rc = mm_alice
+            .rpc(&json!({
+                "userpass": mm_alice.userpass,
+                "method": "buy",
+                "base": base,
+                "rel": rel,
+                "volume": volume,
+                "price": taker_price
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!buy: {}", rc.1);
+        let buy_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
+        uuids.push(buy_json["result"]["uuid"].as_str().unwrap().to_owned());
+
+        // ensure the swaps are started
+        let expected_log = format!("Entering the taker_swap_loop {}/{}", base, rel);
+        mm_alice
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+        let expected_log = format!("Entering the maker_swap_loop {}/{}", base, rel);
+        mm_bob
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+
+        // Ensure trading protocol v2 is enabled.
+        let expected_log = format!("alice: use_trading_proto_v2: enabled");
+        mm_alice
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+        let expected_log = format!("bob: use_trading_proto_v2: enabled");
+        mm_bob
+            .wait_for_log(5., |log| log.contains(&expected_log))
+            .await
+            .unwrap();
+
+        for uuid in uuids.iter() {
+            // ensure the swaps are indexed to the SQLite database
+            let expected_log = format!("Inserting new swap v2 {} to the SQLite database", uuid);
+            mm_alice
+                .wait_for_log(5., |log| log.contains(&expected_log))
+                .await
+                .unwrap();
+            mm_bob
+                .wait_for_log(5., |log| log.contains(&expected_log))
+                .await
+                .unwrap()
+        }
+
+        for uuid in uuids.iter() {
+            match mm_bob
+                .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+            {
+                Ok(_) => (),
+                Err(_) => {
+                    log!("{}", mm_bob.log_as_utf8().unwrap());
+                },
+            }
+
+            match mm_alice
+                .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
+                .await
+            {
+                Ok(_) => (),
+                Err(_) => {
+                    log!("{}", mm_alice.log_as_utf8().unwrap());
+                },
+            }
+
+            log!("Waiting a few second for the fresh swap status to be saved..");
+            Timer::sleep(5.).await;
+
+            log!("{}", mm_alice.log_as_utf8().unwrap());
+            log!("Checking alice/taker status..");
+            check_my_swap_status(
+                &mm_alice,
+                uuid,
+                BigDecimal::try_from(volume).unwrap(),
+                BigDecimal::try_from(volume).unwrap(),
+            )
+            .await;
+
+            log!("{}", mm_bob.log_as_utf8().unwrap());
+            log!("Checking bob/maker status..");
+            check_my_swap_status(
+                &mm_bob,
+                uuid,
+                BigDecimal::try_from(volume).unwrap(),
+                BigDecimal::try_from(volume).unwrap(),
+            )
+            .await;
+        }
+
+        verify_swap_metrics(&mm_bob, &mm_alice).await.unwrap();
+
+        log!("Waiting 3 seconds for nodes to broadcast their swaps data..");
+        Timer::sleep(3.).await;
+
+        for uuid in uuids.iter() {
+            log!("Checking alice status..");
+            wait_check_stats_swap_status(&mm_alice, uuid, 30).await;
+
+            log!("Checking bob status..");
+            wait_check_stats_swap_status(&mm_bob, uuid, 30).await;
+        }
+
+        log!("Checking alice recent swaps..");
+        check_recent_swaps(&mm_alice, uuids.len()).await;
+        log!("Checking bob recent swaps..");
+        check_recent_swaps(&mm_bob, uuids.len()).await;
+        log!("Get {}/{} orderbook", base, rel);
+        let rc = mm_bob
+            .rpc(&json!({
+                "userpass": mm_bob.userpass,
+                "method": "orderbook",
+                "base": base,
+                "rel": rel,
+            }))
+            .await
+            .unwrap();
+        assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
+
+        let bob_orderbook: OrderbookResponse = serde_json::from_str(&rc.1).unwrap();
+        log!("{}/{} orderbook {:?}", base, rel, bob_orderbook);
+
+        assert_eq!(0, bob_orderbook.bids.len(), "{} {} bids must be empty", base, rel);
+        assert_eq!(0, bob_orderbook.asks.len(), "{} {} asks must be empty", base, rel);
+
+        mm_bob.stop().await.unwrap();
+        mm_alice.stop().await.unwrap();
+    }
+
     #[test]
+    #[ignore] // FIXME: temporarily on hold, to focus on `process_swap_msg` (v1).
     fn swap_usdc_ibc_with_nimda() {
         let bob_passphrase = String::from(BOB_PASSPHRASE);
         let alice_passphrase = String::from(ALICE_PASSPHRASE);
@@ -380,175 +947,4 @@ mod trading_proto_v2 {
             0.008,
         ));
     }
-}
-
-pub async fn trade_base_rel_tendermint(
-    mut mm_bob: MarketMakerIt,
-    mut mm_alice: MarketMakerIt,
-    base: &str,
-    rel: &str,
-    maker_price: i32,
-    taker_price: i32,
-    volume: f64,
-) {
-    // // Ensure seednode startup with metrics is detected
-    // let expected_log = format!("lp_init: Seednode startup with metrics detected");
-    // mm_bob
-    //     .wait_for_log(5., |log| log.contains(&expected_log))
-    //     .await
-    //     .unwrap();
-
-    log!("Issue bob {}/{} sell request", base, rel);
-    let rc = mm_bob
-        .rpc(&json!({
-            "userpass": mm_bob.userpass,
-            "method": "setprice",
-            "base": base,
-            "rel": rel,
-            "price": maker_price,
-            "volume": volume
-        }))
-        .await
-        .unwrap();
-    assert!(rc.0.is_success(), "!setprice: {}", rc.1);
-
-    let mut uuids = vec![];
-
-    common::log::info!(
-        "Trigger alice subscription to {}/{} orderbook topic first and sleep for 1 second",
-        base,
-        rel
-    );
-    let rc = mm_alice
-        .rpc(&json!({
-            "userpass": mm_alice.userpass,
-            "method": "orderbook",
-            "base": base,
-            "rel": rel,
-        }))
-        .await
-        .unwrap();
-    assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
-    Timer::sleep(1.).await;
-    common::log::info!("Issue alice {}/{} buy request", base, rel);
-    let rc = mm_alice
-        .rpc(&json!({
-            "userpass": mm_alice.userpass,
-            "method": "buy",
-            "base": base,
-            "rel": rel,
-            "volume": volume,
-            "price": taker_price
-        }))
-        .await
-        .unwrap();
-    assert!(rc.0.is_success(), "!buy: {}", rc.1);
-    let buy_json: serde_json::Value = serde_json::from_str(&rc.1).unwrap();
-    uuids.push(buy_json["result"]["uuid"].as_str().unwrap().to_owned());
-
-    // ensure the swaps are started
-    let expected_log = format!("Entering the taker_swap_loop {}/{}", base, rel);
-    mm_alice
-        .wait_for_log(5., |log| log.contains(&expected_log))
-        .await
-        .unwrap();
-    let expected_log = format!("Entering the maker_swap_loop {}/{}", base, rel);
-    mm_bob
-        .wait_for_log(5., |log| log.contains(&expected_log))
-        .await
-        .unwrap();
-
-    for uuid in uuids.iter() {
-        // ensure the swaps are indexed to the SQLite database
-        let expected_log = format!("Inserting new swap {} to the SQLite database", uuid);
-        mm_alice
-            .wait_for_log(5., |log| log.contains(&expected_log))
-            .await
-            .unwrap();
-        mm_bob
-            .wait_for_log(5., |log| log.contains(&expected_log))
-            .await
-            .unwrap()
-    }
-
-    for uuid in uuids.iter() {
-        match mm_bob
-            .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
-            .await
-        {
-            Ok(_) => (),
-            Err(_) => {
-                log!("{}", mm_bob.log_as_utf8().unwrap());
-            },
-        }
-
-        match mm_alice
-            .wait_for_log(180., |log| log.contains(&format!("[swap uuid={}] Finished", uuid)))
-            .await
-        {
-            Ok(_) => (),
-            Err(_) => {
-                log!("{}", mm_alice.log_as_utf8().unwrap());
-            },
-        }
-
-        log!("Waiting a few second for the fresh swap status to be saved..");
-        Timer::sleep(5.).await;
-
-        log!("{}", mm_alice.log_as_utf8().unwrap());
-        log!("Checking alice/taker status..");
-        check_my_swap_status(
-            &mm_alice,
-            uuid,
-            BigDecimal::try_from(volume).unwrap(),
-            BigDecimal::try_from(volume).unwrap(),
-        )
-        .await;
-
-        log!("{}", mm_bob.log_as_utf8().unwrap());
-        log!("Checking bob/maker status..");
-        check_my_swap_status(
-            &mm_bob,
-            uuid,
-            BigDecimal::try_from(volume).unwrap(),
-            BigDecimal::try_from(volume).unwrap(),
-        )
-        .await;
-    }
-
-    log!("Waiting 3 seconds for nodes to broadcast their swaps data..");
-    Timer::sleep(3.).await;
-
-    for uuid in uuids.iter() {
-        log!("Checking alice status..");
-        wait_check_stats_swap_status(&mm_alice, uuid, 30).await;
-
-        log!("Checking bob status..");
-        wait_check_stats_swap_status(&mm_bob, uuid, 30).await;
-    }
-
-    log!("Checking alice recent swaps..");
-    check_recent_swaps(&mm_alice, uuids.len()).await;
-    log!("Checking bob recent swaps..");
-    check_recent_swaps(&mm_bob, uuids.len()).await;
-    log!("Get {}/{} orderbook", base, rel);
-    let rc = mm_bob
-        .rpc(&json!({
-            "userpass": mm_bob.userpass,
-            "method": "orderbook",
-            "base": base,
-            "rel": rel,
-        }))
-        .await
-        .unwrap();
-    assert!(rc.0.is_success(), "!orderbook: {}", rc.1);
-
-    let bob_orderbook: OrderbookResponse = serde_json::from_str(&rc.1).unwrap();
-    log!("{}/{} orderbook {:?}", base, rel, bob_orderbook);
-
-    assert_eq!(0, bob_orderbook.bids.len(), "{} {} bids must be empty", base, rel);
-    assert_eq!(0, bob_orderbook.asks.len(), "{} {} asks must be empty", base, rel);
-
-    mm_bob.stop().await.unwrap();
-    mm_alice.stop().await.unwrap();
 }

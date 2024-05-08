@@ -156,6 +156,7 @@ async fn process_p2p_message(
                 peer_id.to_string(),
                 &message.data,
                 i_am_relay,
+                i_am_metric,
             )
             .await
             {
@@ -180,12 +181,7 @@ async fn process_p2p_message(
             to_propagate = true;
         },
         Some(lp_swap::SWAP_V2_PREFIX) => {
-            if let Err(e) = lp_swap::process_swap_v2_msg(
-                ctx.clone(),
-                split.next().unwrap_or_default(),
-                &message.data,
-                i_am_metric,
-            ) {
+            if let Err(e) = lp_swap::process_swap_v2_msg(ctx.clone(), split.next().unwrap_or_default(), &message.data) {
                 log::error!("{}", e);
                 return;
             }

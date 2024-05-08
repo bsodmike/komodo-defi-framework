@@ -108,8 +108,6 @@ pub struct MmCtx {
     pub coins_needed_for_kick_start: Mutex<HashSet<String>>,
     /// The context belonging to the `lp_swap` mod: `SwapsContext`.
     pub swaps_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
-    /// FIXME
-    pub metrics_swaps_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
     /// The context belonging to the `lp_stats` mod: `StatsContext`
     pub stats_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
     /// Wallet name for this mm2 instance. Optional for backwards compatibility.
@@ -173,7 +171,6 @@ impl MmCtx {
             shared_db_id: Constructible::default(),
             coins_needed_for_kick_start: Mutex::new(HashSet::new()),
             swaps_ctx: Mutex::new(None),
-            metrics_swaps_ctx: Mutex::new(None),
             stats_ctx: Mutex::new(None),
             wallet_name: Constructible::default(),
             #[cfg(target_arch = "wasm32")]

@@ -531,11 +531,12 @@ pub async fn handle_orderbook_msg(
     from_peer: String,
     msg: &[u8],
     i_am_relay: bool,
+    i_am_metric: bool,
 ) -> OrderbookP2PHandlerResult {
     let topic_str = topic.as_str();
     let mut split = topic_str.split(TOPIC_SEPARATOR);
     if let (Some(ORDERBOOK_PREFIX), Some(_pair)) = (split.next(), split.next()) {
-        process_msg(ctx, from_peer, msg, i_am_relay).await?;
+        process_msg(ctx, from_peer, msg, i_am_relay, i_am_metric).await?;
         Ok(())
     } else {
         MmError::err(OrderbookP2PHandlerError::InvalidTopic(topic_str.to_owned()))
@@ -543,7 +544,13 @@ pub async fn handle_orderbook_msg(
 }
 
 /// Attempts to decode a message and process it returning whether the message is valid and worth rebroadcasting
-pub async fn process_msg(ctx: MmArc, from_peer: String, msg: &[u8], i_am_relay: bool) -> OrderbookP2PHandlerResult {
+pub async fn process_msg(
+    ctx: MmArc,
+    from_peer: String,
+    msg: &[u8],
+    i_am_relay: bool,
+    i_am_metric: bool,
+) -> OrderbookP2PHandlerResult {
     match decode_signed::<new_protocol::OrdermatchMessage>(msg) {
         Ok((message, _sig, pubkey)) => {
             if is_pubkey_banned(&ctx, &pubkey.unprefixed().into()) {
@@ -572,7 +579,7 @@ pub async fn process_msg(ctx: MmArc, from_peer: String, msg: &[u8], i_am_relay: 
                     Ok(())
                 },
                 new_protocol::OrdermatchMessage::TakerConnect(taker_connect) => {
-                    process_taker_connect(ctx, pubkey, taker_connect.into()).await;
+                    process_taker_connect(ctx, pubkey, taker_connect.into(), i_am_metric).await;
                     Ok(())
                 },
                 new_protocol::OrdermatchMessage::MakerConnected(maker_connected) => {
@@ -2975,6 +2982,8 @@ fn lp_connect_start_bob(ctx: MmArc, maker_match: MakerMatch, maker_order: MakerO
         };
 
         if ctx.use_trading_proto_v2() {
+            log::debug!("bob: use_trading_proto_v2: enabled");
+
             let secret_hash_algo = detect_secret_hash_algo(&maker_coin, &taker_coin);
             match (maker_coin, taker_coin) {
                 (MmCoinEnum::UtxoCoin(m), MmCoinEnum::UtxoCoin(t)) => {
@@ -3126,6 +3135,8 @@ fn lp_connected_alice(ctx: MmArc, taker_order: TakerOrder, taker_match: TakerMat
 
         let now = now_sec();
         if ctx.use_trading_proto_v2() {
+            log::debug!("alice: use_trading_proto_v2: enabled");
+
             let taker_secret = match generate_secret() {
                 Ok(s) => s.into(),
                 Err(e) => {
@@ -3730,7 +3741,7 @@ async fn process_taker_request(ctx: MmArc, from_pubkey: H256Json, taker_request:
     }
 }
 
-async fn process_taker_connect(ctx: MmArc, sender_pubkey: PublicKey, connect_msg: TakerConnect) {
+async fn process_taker_connect(ctx: MmArc, sender_pubkey: PublicKey, connect_msg: TakerConnect, i_am_metric: bool) {
     log::debug!("Processing TakerConnect {:?}", connect_msg);
     let ordermatch_ctx = OrdermatchContext::from_ctx(&ctx).unwrap();
 

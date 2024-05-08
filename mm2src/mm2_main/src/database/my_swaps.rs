@@ -127,7 +127,8 @@ const INSERT_MY_SWAP_V2: &str = r#"INSERT INTO my_swaps (
     :other_p2p_pub
 );"#;
 
-pub fn insert_new_swap_v2(ctx: &MmArc, params: &[(&str, &dyn ToSql)]) -> SqlResult<()> {
+pub fn insert_new_swap_v2(ctx: &MmArc, uuid: &String, params: &[(&str, &dyn ToSql)]) -> SqlResult<()> {
+    debug!("Inserting new swap v2 {} to the SQLite database", uuid);
     let conn = ctx.sqlite_connection();
     conn.execute(INSERT_MY_SWAP_V2, params).map(|_| ())
 }
