@@ -16,6 +16,7 @@ use std::{env, thread};
 const BOB_PASSPHRASE: &str = "iris test seed";
 const ALICE_PASSPHRASE: &str = "iris test2 seed";
 
+#[allow(dead_code)]
 mod util {
     use super::*;
 
@@ -400,6 +401,18 @@ mod without_metrics {
 mod trading_proto_v1 {
     use super::*;
 
+
+    // let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
+    // assert_eq!(result.result.address, expected_address);
+    // let expected_balance: BigDecimal = "0.572203".parse().unwrap();
+    // assert_eq!(result.result.balance.unwrap().spendable, expected_balance);
+
+    // let my_balance = block_on(my_balance(&mm, ATOM_TICKER));
+    // assert_eq!(my_balance.balance, expected_balance);
+    // assert_eq!(my_balance.unspendable_balance, BigDecimal::default());
+    // assert_eq!(my_balance.address, expected_address);
+    // assert_eq!(my_balance.coin, ATOM_TICKER);
+
     pub async fn verify_swap_metrics(mm_bob: &MarketMakerIt, mm_alice: &MarketMakerIt) -> Result<(), String> {
         // let rc = mm_alice
         //     .rpc(&json!({
@@ -638,7 +651,10 @@ mod trading_proto_v1 {
             false,
         ));
         let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
-        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+        let expected_address = "iaa1e0rx87mdj79zejewuc4jg7ql9ud2286g2us8f2";
+        assert_eq!(result.result.address, expected_address);
+        let expected_min_balance: BigDecimal = "0.02".parse().unwrap();
+        assert!(result.result.balance.unwrap().spendable > expected_min_balance);
 
         let activation_result = block_on(enable_tendermint(
             &mm_alice,
@@ -648,7 +664,10 @@ mod trading_proto_v1 {
             false,
         ));
         let result: RpcV2Response<TendermintActivationResult> = serde_json::from_value(activation_result).unwrap();
-        assert_ne!(result.result.balance.unwrap().spendable, zero_balance);
+        let expected_address = "iaa1erfnkjsmalkwtvj44qnfr2drfzdt4n9ldh0kjv";
+        assert_eq!(result.result.address, expected_address);
+        let expected_min_balance: BigDecimal = "1.0".parse().unwrap();
+        assert!(result.result.balance.unwrap().spendable > expected_min_balance);
 
         // Ensure seednode startup with metrics is detected
         let expected_log = format!("lp_init: Seednode startup with metrics detected");

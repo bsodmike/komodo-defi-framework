@@ -1,3 +1,4 @@
+use crate::fs::postcard::FsPostcardError;
 use async_std::fs as async_fs;
 use common::log::{error, LogOnError};
 use derive_more::Display;
@@ -15,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub type FsJsonResult<T> = Result<T, MmError<FsJsonError>>;
+pub type FsPostcardResult<T> = Result<T, MmError<FsPostcardError>>;
 pub type IoResult<T> = Result<T, MmError<io::Error>>;
 
 #[derive(Display)]
@@ -278,4 +280,52 @@ pub fn json_dir_entries(path: &dyn AsRef<Path>) -> Result<Vec<DirEntry>, String>
             }
         })
         .collect())
+}
+
+/// Postcard
+pub mod postcard {
+    use super::FsPostcardResult;
+    use async_std::fs as async_fs;
+    use derive_more::Display;
+    use futures::AsyncWriteExt;
+    use mm2_err_handle::prelude::*;
+    use postcard::Error as PostcardError;
+    use serde::Serialize;
+    use std::io::{self};
+    use std::path::{Path, PathBuf};
+
+    #[derive(Display)]
+    pub enum FsPostcardError {
+        IoReading(io::Error),
+        IoWriting(io::Error),
+        Serializing(PostcardError),
+        Deserializing(PostcardError),
+    }
+
+    pub async fn write_bytes<T>(t: &T, path: &Path, use_tmp_file: bool) -> FsPostcardResult<()>
+    where
+        T: Serialize,
+    {
+        let content = postcard::to_allocvec(t).map_to_mm(FsPostcardError::Serializing)?;
+
+        let path_tmp = if use_tmp_file {
+            PathBuf::from(format!("{}.tmp", path.display()))
+        } else {
+            path.to_path_buf()
+        };
+
+        let fs_fut = async {
+            let mut file = async_fs::File::create(&path_tmp).await?;
+            file.write_all(&content).await?;
+            file.flush().await?;
+
+            if use_tmp_file {
+                async_fs::rename(path_tmp, path).await?;
+            }
+            Ok(())
+        };
+
+        let res: io::Result<_> = fs_fut.await;
+        res.map_to_mm(FsPostcardError::IoWriting)
+    }
 }

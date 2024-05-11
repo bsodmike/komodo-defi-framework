@@ -171,8 +171,13 @@ async fn process_p2p_message(
             to_propagate = true;
         },
         Some(lp_swap::SWAP_PREFIX) => {
-            if let Err(e) =
-                lp_swap::process_swap_msg(ctx.clone(), split.next().unwrap_or_default(), &message.data).await
+            if let Err(e) = lp_swap::process_swap_msg(
+                ctx.clone(),
+                split.next().unwrap_or_default(),
+                &message.data,
+                i_am_metric,
+            )
+            .await
             {
                 log::error!("{}", e);
                 return;
