@@ -294,6 +294,9 @@ pub mod postcard {
     use std::io::{self};
     use std::path::{Path, PathBuf};
 
+    // Re-export
+    pub use postcard;
+
     #[derive(Display)]
     pub enum FsPostcardError {
         IoReading(io::Error),

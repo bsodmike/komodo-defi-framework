@@ -106,6 +106,8 @@ pub struct MmCtx {
     pub shared_db_id: Constructible<H160>,
     /// Coins that should be enabled to kick start the interrupted swaps and orders.
     pub coins_needed_for_kick_start: Mutex<HashSet<String>>,
+    /// Seed node metrics belonging to the `lp_swap` mod: `context::MetricsContext`.
+    pub seed_metrics_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
     /// The context belonging to the `lp_swap` mod: `SwapsContext`.
     pub swaps_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
     /// The context belonging to the `lp_stats` mod: `StatsContext`
@@ -170,6 +172,7 @@ impl MmCtx {
             rmd160: Constructible::default(),
             shared_db_id: Constructible::default(),
             coins_needed_for_kick_start: Mutex::new(HashSet::new()),
+            seed_metrics_ctx: Mutex::new(None),
             swaps_ctx: Mutex::new(None),
             stats_ctx: Mutex::new(None),
             wallet_name: Constructible::default(),

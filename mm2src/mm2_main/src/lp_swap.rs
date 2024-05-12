@@ -103,7 +103,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[path = "lp_swap/pubkey_banning.rs"] mod pubkey_banning;
 #[path = "lp_swap/recreate_swap_data.rs"] mod recreate_swap_data;
 #[path = "lp_swap/saved_swap.rs"] mod saved_swap;
-#[path = "lp_swap/seed_metrics.rs"] mod seed_metrics;
+#[path = "lp_swap/seed_metrics.rs"] pub mod seed_metrics;
 #[path = "lp_swap/swap_lock.rs"] mod swap_lock;
 #[path = "lp_swap/komodefi.swap_v2.pb.rs"]
 #[rustfmt::skip]
