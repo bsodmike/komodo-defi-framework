@@ -22,6 +22,8 @@ const NUCLEUS_TESTNET_RPC_URLS: &[&str] = &["http://5.161.55.53:26657"];
 const TENDERMINT_TEST_BIP39_SEED: &str =
     "emerge canoe salmon dolphin glow priority random become gasp sell blade argue";
 
+mod seednode_metrics;
+
 #[test]
 fn test_tendermint_balance() {
     let coins = json!([atom_testnet_conf()]);

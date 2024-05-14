@@ -40,9 +40,7 @@ use crate::mm2::lp_dispatcher::{dispatch_lp_event, StopCtxEvent};
 use crate::mm2::lp_network::subscribe_to_topic;
 use crate::mm2::lp_ordermatch::{cancel_orders_by, get_matching_orders, CancelBy};
 use crate::mm2::lp_swap::{active_swaps_using_coins, tx_helper_topic, watcher_topic};
-
-const INTERNAL_SERVER_ERROR_CODE: u16 = 500;
-const RESPONSE_OK_STATUS_CODE: u16 = 200;
+use crate::mm2::rpc::{INTERNAL_SERVER_ERROR_CODE, RESPONSE_OK_STATUS_CODE};
 
 pub fn disable_coin_err(
     error: String,

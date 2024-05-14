@@ -27,7 +27,7 @@
 #[cfg(not(target_arch = "wasm32"))] use common::block_on;
 use common::crash_reports::init_crash_reports;
 use common::double_panic_crash;
-use common::log::LogLevel;
+use common::log::{info, LogLevel};
 use common::password_policy::password_policy;
 use mm2_core::mm_ctx::MmCtxBuilder;
 
@@ -114,6 +114,7 @@ pub async fn lp_main(
     // Logger can be initialized once.
     // If `mm2` is linked as a library, and `mm2` is restarted, `init_logger` returns an error.
     init_logger(log_filter, params.conf["silent_console"].as_bool().unwrap_or_default()).ok();
+    info!("Loglevel: {}", log_filter);
 
     let conf = params.conf;
     if !conf["rpc_password"].is_null() {
@@ -266,6 +267,7 @@ pub fn mm2_main(version: String, datetime: String) {
         return;
     }
 
+    log!("Hello 👋");
     log!("AtomicDEX API {} DT {}", version, datetime);
 
     if let Err(err) = run_lp_main(first_arg, &|_| (), version, datetime) {

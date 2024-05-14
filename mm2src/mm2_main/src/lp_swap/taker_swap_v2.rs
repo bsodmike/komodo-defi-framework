@@ -203,7 +203,7 @@ impl StateMachineStorage for TakerSwapStorage {
                 ":taker_coin_nota": repr.conf_settings.taker_coin_nota,
                 ":other_p2p_pub": repr.maker_p2p_pub.to_bytes(),
             };
-            insert_new_swap_v2(&ctx, sql_params)?;
+            insert_new_swap_v2(&ctx, &repr.uuid.to_string(), sql_params)?;
             Ok(())
         })
         .await

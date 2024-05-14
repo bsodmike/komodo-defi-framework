@@ -142,6 +142,8 @@ pub enum P2PInitError {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     #[display(fmt = "WASM node can be a seed if only 'p2p_in_memory' is true")]
     WasmNodeCannotBeSeed,
+    #[display(fmt = "WASM node can be a metrics node")]
+    WasmNodeCannotBeMetrics,
     #[display(fmt = "Internal error: '{}'", _0)]
     Internal(String),
 }
@@ -524,6 +526,12 @@ pub async fn lp_init(ctx: MmArc, version: String, datetime: String) -> MmInitRes
         }
     });
 
+    let i_am_seed = ctx.conf["i_am_seed"].as_bool().unwrap_or(false);
+    let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
+    if i_am_seed && i_am_metric {
+        info!("lp_init: Seednode startup with metrics detected");
+    }
+
     // In the mobile version we might depend on `lp_init` staying around until the context stops.
     loop {
         if ctx.is_stopping() {
@@ -561,6 +569,7 @@ async fn kick_start(ctx: MmArc) -> MmInitResult<()> {
 
 pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let i_am_seed = ctx.conf["i_am_seed"].as_bool().unwrap_or(false);
+    let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
     let netid = ctx.netid();
 
     if DEPRECATED_NETID_LIST.contains(&netid) {
@@ -631,7 +640,7 @@ pub async fn init_p2p(ctx: MmArc) -> P2PResult<()> {
     let p2p_context = P2PContext::new(cmd_tx);
     p2p_context.store_to_mm_arc(&ctx);
 
-    let fut = p2p_event_process_loop(ctx.weak(), event_rx, i_am_seed);
+    let fut = p2p_event_process_loop(ctx.weak(), event_rx, i_am_seed, i_am_metric);
     ctx.spawner().spawn(fut);
 
     Ok(())
@@ -693,6 +702,15 @@ fn relay_in_memory_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
             field: "p2p_in_memory_port".to_owned(),
         })?;
     Ok(NodeType::RelayInMemory { port })
+}
+
+fn relay_with_metrics_in_memory_node_type(ctx: &MmArc) -> P2PResult<NodeType> {
+    let port = ctx
+        .p2p_in_memory_port()
+        .or_mm_err(|| P2PInitError::FieldNotFoundInConfig {
+            field: "p2p_in_memory_port".to_owned(),
+        })?;
+    Ok(NodeType::RelayInMemoryWithMetrics { port })
 }
 
 fn light_node_type(ctx: &MmArc) -> P2PResult<NodeType> {

@@ -66,6 +66,8 @@ pub struct MmCtx {
     pub log: log::LogArc,
     /// Tools and methods and to collect and export the MM metrics.
     pub metrics: MetricsArc,
+    /// Tools and methods and to collect and export swap metrics.
+    pub metrics_swaps: MetricsArc,
     /// Set to true after `lp_passphrase_init`, indicating that we have a usable state.
     ///
     /// Should be refactored away in the future. State should always be valid.
@@ -104,6 +106,8 @@ pub struct MmCtx {
     pub shared_db_id: Constructible<H160>,
     /// Coins that should be enabled to kick start the interrupted swaps and orders.
     pub coins_needed_for_kick_start: Mutex<HashSet<String>>,
+    /// Seed node metrics belonging to the `lp_swap` mod: `context::MetricsContext`.
+    pub seed_metrics_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
     /// The context belonging to the `lp_swap` mod: `SwapsContext`.
     pub swaps_ctx: Mutex<Option<Arc<dyn Any + 'static + Send + Sync>>>,
     /// The context belonging to the `lp_stats` mod: `StatsContext`
@@ -147,6 +151,7 @@ impl MmCtx {
             conf: Json::Object(json::Map::new()),
             log: log::LogArc::new(log),
             metrics: MetricsArc::new(),
+            metrics_swaps: MetricsArc::new(),
             initialized: Constructible::default(),
             rpc_started: Constructible::default(),
             stream_channel_controller: Controller::new(),
@@ -167,6 +172,7 @@ impl MmCtx {
             rmd160: Constructible::default(),
             shared_db_id: Constructible::default(),
             coins_needed_for_kick_start: Mutex::new(HashSet::new()),
+            seed_metrics_ctx: Mutex::new(None),
             swaps_ctx: Mutex::new(None),
             stats_ctx: Mutex::new(None),
             wallet_name: Constructible::default(),

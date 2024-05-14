@@ -94,7 +94,7 @@ pub enum P2PRequest {
     NetworkInfo(lp_stats::NetworkInfoRequest),
 }
 
-pub async fn p2p_event_process_loop(ctx: MmWeak, mut rx: AdexEventRx, i_am_relay: bool) {
+pub async fn p2p_event_process_loop(ctx: MmWeak, mut rx: AdexEventRx, i_am_relay: bool, i_am_metric: bool) {
     loop {
         let adex_event = rx.next().await;
         let ctx = match MmArc::from_weak(&ctx) {
@@ -115,6 +115,7 @@ pub async fn p2p_event_process_loop(ctx: MmWeak, mut rx: AdexEventRx, i_am_relay
                         message_id,
                         message,
                         i_am_relay,
+                        i_am_metric,
                     ));
                 },
                 GossipsubEvent::GossipsubNotSupported { peer_id } => {
@@ -142,6 +143,7 @@ async fn process_p2p_message(
     message_id: MessageId,
     message: GossipsubMessage,
     i_am_relay: bool,
+    i_am_metric: bool,
 ) {
     let mut to_propagate = false;
 
@@ -154,6 +156,7 @@ async fn process_p2p_message(
                 peer_id.to_string(),
                 &message.data,
                 i_am_relay,
+                i_am_metric,
             )
             .await
             {
@@ -168,8 +171,13 @@ async fn process_p2p_message(
             to_propagate = true;
         },
         Some(lp_swap::SWAP_PREFIX) => {
-            if let Err(e) =
-                lp_swap::process_swap_msg(ctx.clone(), split.next().unwrap_or_default(), &message.data).await
+            if let Err(e) = lp_swap::process_swap_msg(
+                ctx.clone(),
+                split.next().unwrap_or_default(),
+                &message.data,
+                i_am_metric,
+            )
+            .await
             {
                 log::error!("{}", e);
                 return;

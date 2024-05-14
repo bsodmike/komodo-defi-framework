@@ -59,11 +59,12 @@
 
 use super::lp_network::P2PRequestResult;
 use crate::mm2::lp_network::{broadcast_p2p_msg, Libp2pPeerId, P2PProcessError, P2PProcessResult, P2PRequestError};
+use crate::mm2::lp_ordermatch::get_trie_mut;
 use crate::mm2::lp_swap::maker_swap_v2::{MakerSwapStateMachine, MakerSwapStorage};
 use crate::mm2::lp_swap::taker_swap_v2::{TakerSwapStateMachine, TakerSwapStorage};
 use bitcrypto::{dhash160, sha256};
 use coins::{lp_coinfind, lp_coinfind_or_err, CoinFindError, DexFee, MmCoin, MmCoinEnum, TradeFee, TransactionEnum};
-use common::log::{debug, warn};
+use common::log::{debug, trace, warn};
 use common::now_sec;
 use common::time_cache::DuplicateCache;
 use common::{bits256, calc_total_pages,
@@ -102,6 +103,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[path = "lp_swap/pubkey_banning.rs"] mod pubkey_banning;
 #[path = "lp_swap/recreate_swap_data.rs"] mod recreate_swap_data;
 #[path = "lp_swap/saved_swap.rs"] mod saved_swap;
+#[path = "lp_swap/seed_metrics.rs"] pub mod seed_metrics;
 #[path = "lp_swap/swap_lock.rs"] mod swap_lock;
 #[path = "lp_swap/komodefi.swap_v2.pb.rs"]
 #[rustfmt::skip]
@@ -200,7 +202,7 @@ impl SwapMsgStore {
 }
 
 /// Storage for P2P messages, which are exchanged during SwapV2 protocol execution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SwapV2MsgStore {
     maker_negotiation: Option<MakerNegotiation>,
     taker_negotiation: Option<TakerNegotiation>,
@@ -326,7 +328,7 @@ pub fn broadcast_p2p_tx_msg(ctx: &MmArc, topic: String, msg: &TransactionEnum, p
     broadcast_p2p_msg(ctx, topic, encoded_msg, from);
 }
 
-pub async fn process_swap_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PRequestResult<()> {
+pub async fn process_swap_msg(ctx: MmArc, topic: &str, msg: &[u8], i_am_metric: bool) -> P2PRequestResult<()> {
     let uuid = Uuid::from_str(topic).map_to_mm(|e| P2PRequestError::DecodeError(e.to_string()))?;
 
     let msg = match decode_signed::<SwapMsg>(msg) {
@@ -339,6 +341,15 @@ pub async fn process_swap_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PRequest
                     if let Err(e) = save_stats_swap(&ctx, &status.data).await {
                         error!("Error saving the swap {} status: {}", status.data.uuid(), e);
                     }
+
+                    if let Err(e) = seed_metrics::process_seednode_metrics(&ctx, &status.data).await {
+                        error!(
+                            "Error processing swap for seednode metrics {} status: {}",
+                            status.data.uuid(),
+                            e
+                        );
+                    }
+
                     Ok(())
                 },
                 Err(swap_status_err) => {
@@ -1745,7 +1756,7 @@ pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PProcessRes
     let uuid = Uuid::from_str(topic).map_to_mm(|e| P2PProcessError::DecodeError(e.to_string()))?;
 
     let swap_ctx = SwapsContext::from_ctx(&ctx).unwrap();
-    let mut msgs = swap_ctx.swap_v2_msgs.lock().unwrap();
+    let mut msgs: std::sync::MutexGuard<HashMap<Uuid, SwapV2MsgStore>> = swap_ctx.swap_v2_msgs.lock().unwrap();
     if let Some(msg_store) = msgs.get_mut(&uuid) {
         let signed_message = SignedMessage::decode(msg).map_to_mm(|e| P2PProcessError::DecodeError(e.to_string()))?;
 
@@ -1764,7 +1775,7 @@ pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PProcessRes
             .verify(&secp_message, &signature, &pubkey)
             .map_to_mm(|e| P2PProcessError::InvalidSignature(e.to_string()))?;
 
-        let swap_message = SwapMessage::decode(signed_message.payload.as_slice())
+        let swap_message: SwapMessage = SwapMessage::decode(signed_message.payload.as_slice())
             .map_to_mm(|e| P2PProcessError::DecodeError(e.to_string()))?;
 
         let uuid_from_message =
@@ -1789,15 +1800,64 @@ pub fn process_swap_v2_msg(ctx: MmArc, topic: &str, msg: &[u8]) -> P2PProcessRes
                 msg_store.maker_negotiated = Some(maker_negotiated)
             },
             Some(swap_message::Inner::TakerFundingInfo(taker_funding)) => msg_store.taker_funding = Some(taker_funding),
-            Some(swap_message::Inner::MakerPaymentInfo(maker_payment)) => msg_store.maker_payment = Some(maker_payment),
-            Some(swap_message::Inner::TakerPaymentInfo(taker_payment)) => msg_store.taker_payment = Some(taker_payment),
+            Some(swap_message::Inner::MakerPaymentInfo(maker_payment)) => {
+                trace!("process_swap_v2_msg: maker_payment: {:?}", &maker_payment);
+                msg_store.maker_payment = Some(maker_payment)
+            },
+            Some(swap_message::Inner::TakerPaymentInfo(taker_payment)) => {
+                trace!("process_swap_v2_msg: taker_payment: {:?}", &taker_payment);
+                msg_store.taker_payment = Some(taker_payment)
+            },
             Some(swap_message::Inner::TakerPaymentSpendPreimage(preimage)) => {
                 msg_store.taker_payment_spend_preimage = Some(preimage)
             },
             None => return MmError::err(P2PProcessError::DecodeError("swap_message.inner is None".into())),
         }
+        let msg_store_cpy: SwapV2MsgStore = msg_store.clone();
     }
     Ok(())
+}
+
+mod seed_nodes {
+    use common::log::error;
+    use common::now_sec;
+    use common::time_cache::TimeCache;
+    use std::collections::hash_map::{HashMap, RawEntryMut};
+    use std::collections::HashSet;
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    #[derive(Debug, Default, Clone, PartialEq)]
+    pub struct SwapMemoryStoreItem {
+        pubkey: String,
+        uuid: Uuid,
+        base: String,
+        rel: String,
+        created_at: u64,
+    }
+
+    impl SwapMemoryStoreItem {
+        fn new() -> Self { Self { ..Default::default() } }
+    }
+
+    /// Builds SwapMemoryStoreItemBuilder struct to build SwapMemoryStoreItem
+    pub struct SwapMemoryStoreItemBuilder {}
+
+    impl SwapMemoryStoreItemBuilder {
+        pub fn new() -> Self { Self {} }
+
+        pub fn build(&self) -> Result<SwapMemoryStoreItem, String> {
+            let item = SwapMemoryStoreItem::new();
+
+            Ok(item)
+        }
+    }
+    #[derive(Default)]
+    struct SwapMemoryStore {}
+
+    impl SwapMemoryStore {
+        //
+    }
 }
 
 async fn recv_swap_v2_msg<T>(

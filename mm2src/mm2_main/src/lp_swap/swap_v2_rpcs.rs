@@ -11,6 +11,7 @@ use derive_more::Display;
 use http::StatusCode;
 use mm2_core::mm_ctx::MmArc;
 use mm2_err_handle::prelude::*;
+use mm2_metrics::MetricsOps;
 use mm2_number::{MmNumber, MmNumberMultiRepr};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -500,4 +501,117 @@ pub(crate) async fn active_swaps_rpc(
             .collect(),
         statuses,
     })
+}
+
+/// Represents data of the swap used for RPC, omits fields that should be kept in secret
+/// https://github.com/KomodoPlatform/komodo-defi-framework/pull/2107
+
+#[derive(Serialize)]
+#[serde(tag = "swap_type", content = "swap_data")]
+pub(crate) enum MetricsSwapRpcData {
+    MakerV1(MakerSavedSwap),
+    TakerV1(TakerSavedSwap),
+    MakerV2(MetricsSwapForRpc<MakerSwapEvent>),
+    TakerV2(MetricsSwapForRpc<TakerSwapEvent>),
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MetricsSwapForRpc<T> {
+    coin: String,
+    other_coin: String,
+    uuid: Uuid,
+    started_at: i64,
+    is_finished: bool,
+    events: Vec<T>,
+    maker_volume: MmNumberMultiRepr,
+    taker_volume: MmNumberMultiRepr,
+    premium: MmNumberMultiRepr,
+    dex_fee: MmNumberMultiRepr,
+    lock_duration: i64,
+    maker_coin_confs: i64,
+    maker_coin_nota: bool,
+    taker_coin_confs: i64,
+    taker_coin_nota: bool,
+}
+
+impl<T: DeserializeOwned> MetricsSwapForRpc<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn from_row(row: &Row) -> SqlResult<Self> {
+        Ok(Self {
+            coin: row.get(0)?,
+            other_coin: row.get(1)?,
+            uuid: row
+                .get::<_, String>(2)?
+                .parse()
+                .map_err(|e| SqlError::FromSqlConversionFailure(2, SqlType::Text, Box::new(e)))?,
+            started_at: row.get(3)?,
+            is_finished: row.get(4)?,
+            events: serde_json::from_str(&row.get::<_, String>(5)?)
+                .map_err(|e| SqlError::FromSqlConversionFailure(5, SqlType::Text, Box::new(e)))?,
+            maker_volume: MmNumber::from_fraction_string(&row.get::<_, String>(6)?)
+                .map_err(|e| SqlError::FromSqlConversionFailure(6, SqlType::Text, Box::new(e)))?
+                .into(),
+            taker_volume: MmNumber::from_fraction_string(&row.get::<_, String>(7)?)
+                .map_err(|e| SqlError::FromSqlConversionFailure(7, SqlType::Text, Box::new(e)))?
+                .into(),
+            premium: MmNumber::from_fraction_string(&row.get::<_, String>(8)?)
+                .map_err(|e| SqlError::FromSqlConversionFailure(8, SqlType::Text, Box::new(e)))?
+                .into(),
+            dex_fee: MmNumber::from_fraction_string(&row.get::<_, String>(9)?)
+                .map_err(|e| SqlError::FromSqlConversionFailure(9, SqlType::Text, Box::new(e)))?
+                .into(),
+            lock_duration: row.get(10)?,
+            maker_coin_confs: row.get(11)?,
+            maker_coin_nota: row.get(12)?,
+            taker_coin_confs: row.get(13)?,
+            taker_coin_nota: row.get(14)?,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct MetricsSwapsRequest {
+    #[serde(default)]
+    include_status: bool,
+}
+
+#[derive(Display, Serialize, SerializeErrorType)]
+#[serde(tag = "error_type", content = "error_data")]
+pub(crate) enum MetricsSwapsErr {
+    Internal(String),
+}
+
+impl HttpStatusCode for MetricsSwapsErr {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            MetricsSwapsErr::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct MetricsSwapsResponse {
+    metrics: String,
+    // uuids: Vec<Uuid>,
+    // statuses: HashMap<Uuid, MetricsSwapRpcData>,
+}
+
+pub(crate) async fn swaps_metrics_rpc(
+    ctx: MmArc,
+    req: MetricsSwapsRequest,
+) -> MmResult<MetricsSwapsResponse, MetricsSwapsErr> {
+    let i_am_seed = ctx.conf["i_am_seed"].as_bool().unwrap_or(false);
+    let i_am_metric = ctx.conf["i_am_metric"].as_bool().unwrap_or(false);
+    if !i_am_seed && !i_am_metric {
+        return Err(MetricsSwapsErr::Internal(
+            "Metrics only supported by seed nodes with metric-gathering capabilities".to_string(),
+        )
+        .into());
+    }
+
+    // NOTE: based on active_swaps_rpc
+    match ctx.metrics_swaps.collect_json().map(|value| value.to_string()) {
+        Ok(response) => Ok(MetricsSwapsResponse { metrics: response }),
+        Err(err) => Err(MetricsSwapsErr::Internal(err.to_string()).into()),
+    }
 }

@@ -52,6 +52,12 @@ pub const TRADING_PROTO_UPGRADE_MIGRATION: &[&str] = &[
     "ALTER TABLE my_swaps ADD COLUMN taker_coin_nota BOOLEAN;",
 ];
 
+/// Adds new fields required for trading protocol upgrade implementation (swap v2)
+pub const SEEDNODES_ADD_METRICS_UPGRADE_MIGRATION: &[&str] = &[
+    //
+    "ALTER TABLE my_swaps ADD COLUMN is_finished BOOLEAN NOT NULL DEFAULT 0;",
+];
+
 pub const ADD_OTHER_P2P_PUBKEY_FIELD: &str = "ALTER TABLE my_swaps ADD COLUMN other_p2p_pub BLOB;";
 // Storing rational numbers as text to maintain precision
 pub const ADD_DEX_FEE_BURN_FIELD: &str = "ALTER TABLE my_swaps ADD COLUMN dex_fee_burn TEXT;";
@@ -121,7 +127,8 @@ const INSERT_MY_SWAP_V2: &str = r#"INSERT INTO my_swaps (
     :other_p2p_pub
 );"#;
 
-pub fn insert_new_swap_v2(ctx: &MmArc, params: &[(&str, &dyn ToSql)]) -> SqlResult<()> {
+pub fn insert_new_swap_v2(ctx: &MmArc, uuid: &String, params: &[(&str, &dyn ToSql)]) -> SqlResult<()> {
+    debug!("Inserting new swap v2 {} to the SQLite database", uuid);
     let conn = ctx.sqlite_connection();
     conn.execute(INSERT_MY_SWAP_V2, params).map(|_| ())
 }
