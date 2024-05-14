@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use common::{block_on, log};
 use http::HeaderMap;
 use http::StatusCode;
@@ -28,7 +30,9 @@ pub mod seed_metrics {
             let data: Result<Vec<(i64, f32, f32, f32, f32)>, mm2_io::fs::postcard::postcard::Error> =
                 mm2_io::fs::postcard::postcard::from_bytes(bytes);
 
-            data.unwrap()
+            let data = data.unwrap();
+
+            data
         }
 
         let fake_data = get_fake_data();
